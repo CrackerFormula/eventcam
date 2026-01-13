@@ -5,6 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 const qrcode = require('qrcode');
+const archiver = require('archiver');
 const { Pool } = require('pg');
 
 const app = express();
@@ -28,6 +29,8 @@ const DB_PASSWORD = process.env.DB_PASSWORD || '';
 const DB_SSLMODE = process.env.DB_SSLMODE || 'disable';
 
 const EVENTS_FILE = path.join(CONFIG_DIR, 'events.json');
+const ADMIN_FILE = path.join(CONFIG_DIR, 'admin.json');
+const AUTH_SECRET_FILE = path.join(CONFIG_DIR, 'auth-secret');
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
@@ -37,8 +40,87 @@ function ensureDir(dirPath) {
   fs.mkdirSync(dirPath, { recursive: true });
 }
 
+function loadAuthSecret() {
+  ensureDir(CONFIG_DIR);
+  try {
+    return fs.readFileSync(AUTH_SECRET_FILE, 'utf8').trim();
+  } catch (err) {
+    const secret = crypto.randomBytes(32).toString('hex');
+    fs.writeFileSync(AUTH_SECRET_FILE, secret, 'utf8');
+    return secret;
+  }
+}
+
 function safeId() {
   return crypto.randomBytes(4).toString('hex');
+}
+
+function base64UrlEncode(value) {
+  return Buffer.from(value)
+    .toString('base64')
+    .replace(/=/g, '')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_');
+}
+
+function base64UrlDecode(value) {
+  const padded = value.replace(/-/g, '+').replace(/_/g, '/');
+  const padLength = (4 - (padded.length % 4)) % 4;
+  const paddedValue = padded + '='.repeat(padLength);
+  return Buffer.from(paddedValue, 'base64').toString('utf8');
+}
+
+function parseCookies(req) {
+  const header = req.headers.cookie || '';
+  return header.split(';').reduce((acc, part) => {
+    const [key, ...rest] = part.trim().split('=');
+    if (!key) return acc;
+    acc[key] = decodeURIComponent(rest.join('='));
+    return acc;
+  }, {});
+}
+
+const AUTH_SECRET = loadAuthSecret();
+
+function signToken(value) {
+  return crypto.createHmac('sha256', AUTH_SECRET).update(value).digest('hex');
+}
+
+function encodeAuthToken(payload) {
+  const body = base64UrlEncode(JSON.stringify(payload));
+  const signature = signToken(body);
+  return `${body}.${signature}`;
+}
+
+function decodeAuthToken(token) {
+  if (!token) return null;
+  const [body, signature] = token.split('.');
+  if (!body || !signature) return null;
+  if (signToken(body) !== signature) return null;
+  try {
+    return JSON.parse(base64UrlDecode(body));
+  } catch (err) {
+    return null;
+  }
+}
+
+function setAuthCookie(req, res, token) {
+  const secure = req.secure || req.headers['x-forwarded-proto'] === 'https';
+  const attributes = [
+    `eventcam_auth=${encodeURIComponent(token)}`,
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    `Max-Age=${60 * 60 * 24 * 7}`
+  ];
+  if (secure) {
+    attributes.push('Secure');
+  }
+  res.setHeader('Set-Cookie', attributes.join('; '));
+}
+
+function clearAuthCookie(res) {
+  res.setHeader('Set-Cookie', 'eventcam_auth=; Path=/; Max-Age=0; SameSite=Lax');
 }
 
 function baseUrlFromRequest(req) {
@@ -46,6 +128,54 @@ function baseUrlFromRequest(req) {
   const proto = req.headers['x-forwarded-proto'] || req.protocol;
   return `${proto}://${req.get('host')}`;
 }
+
+function generateEventCredentials() {
+  const username = `guest-${crypto.randomBytes(3).toString('hex')}`;
+  const password = crypto.randomBytes(9).toString('base64').replace(/[^a-zA-Z0-9]/g, '').slice(0, 12);
+  return { username, password };
+}
+
+function hashPassword(password, salt = crypto.randomBytes(16).toString('hex'), iterations = 100000) {
+  const hash = crypto.pbkdf2Sync(password, salt, iterations, 64, 'sha256').toString('hex');
+  return { salt, hash, iterations };
+}
+
+function loadAdminConfig() {
+  try {
+    const raw = fs.readFileSync(ADMIN_FILE, 'utf8');
+    const data = JSON.parse(raw);
+    if (data && data.user && data.salt && data.hash && data.iterations) {
+      return data;
+    }
+  } catch (err) {
+    // Fall through to environment defaults.
+  }
+  return {
+    user: ADMIN_USER,
+    ...hashPassword(ADMIN_PASSWORD)
+  };
+}
+
+function saveAdminConfig(config) {
+  ensureDir(CONFIG_DIR);
+  fs.writeFileSync(ADMIN_FILE, JSON.stringify({
+    user: config.user,
+    salt: config.salt,
+    hash: config.hash,
+    iterations: config.iterations,
+    updatedAt: new Date().toISOString()
+  }, null, 2), 'utf8');
+}
+
+function verifyPassword(password, config) {
+  const test = crypto.pbkdf2Sync(password, config.salt, config.iterations, 64, 'sha256').toString('hex');
+  const expected = Buffer.from(config.hash, 'hex');
+  const actual = Buffer.from(test, 'hex');
+  if (expected.length !== actual.length) return false;
+  return crypto.timingSafeEqual(expected, actual);
+}
+
+const adminConfig = loadAdminConfig();
 
 function requireAdmin(req, res, next) {
   const header = req.headers.authorization || '';
@@ -56,7 +186,7 @@ function requireAdmin(req, res, next) {
   }
   const decoded = Buffer.from(header.slice(6), 'base64').toString('utf8');
   const [user, pass] = decoded.split(':');
-  if (user !== ADMIN_USER || pass !== ADMIN_PASSWORD) {
+  if (user !== adminConfig.user || !verifyPassword(pass || '', adminConfig)) {
     res.set('WWW-Authenticate', 'Basic realm="EventCam Admin"');
     res.status(401).send('Invalid credentials.');
     return;
@@ -95,6 +225,9 @@ async function initDb() {
     );
   `);
 
+  await pool.query(`ALTER TABLE events ADD COLUMN IF NOT EXISTS event_user TEXT;`);
+  await pool.query(`ALTER TABLE events ADD COLUMN IF NOT EXISTS event_password TEXT;`);
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS photos (
       id SERIAL PRIMARY KEY,
@@ -103,12 +236,34 @@ async function initDb() {
       created_at TIMESTAMPTZ DEFAULT NOW()
     );
   `);
+
+  const missing = await pool.query('SELECT id FROM events WHERE event_user IS NULL OR event_password IS NULL');
+  for (const row of missing.rows) {
+    const creds = generateEventCredentials();
+    await pool.query(
+      'UPDATE events SET event_user = $1, event_password = $2 WHERE id = $3',
+      [creds.username, creds.password, row.id]
+    );
+  }
 }
 
 function loadEventsLocal() {
   try {
     const raw = fs.readFileSync(EVENTS_FILE, 'utf8');
-    return JSON.parse(raw);
+    const events = JSON.parse(raw);
+    let updated = false;
+    events.forEach((evt) => {
+      if (!evt.event_user || !evt.event_password) {
+        const creds = generateEventCredentials();
+        evt.event_user = creds.username;
+        evt.event_password = creds.password;
+        updated = true;
+      }
+    });
+    if (updated) {
+      saveEventsLocal(events);
+    }
+    return events;
   } catch (err) {
     return [];
   }
@@ -121,7 +276,7 @@ function saveEventsLocal(events) {
 
 async function listEvents() {
   if (pool) {
-    const result = await pool.query('SELECT id, name FROM events ORDER BY created_at DESC');
+    const result = await pool.query('SELECT id, name, event_user, event_password FROM events ORDER BY created_at DESC');
     return result.rows;
   }
   return loadEventsLocal();
@@ -129,23 +284,37 @@ async function listEvents() {
 
 async function createEvent(name) {
   const id = safeId();
+  const creds = generateEventCredentials();
   if (pool) {
-    await pool.query('INSERT INTO events (id, name) VALUES ($1, $2)', [id, name]);
+    await pool.query('INSERT INTO events (id, name, event_user, event_password) VALUES ($1, $2, $3, $4)', [
+      id,
+      name,
+      creds.username,
+      creds.password
+    ]);
   } else {
     const events = loadEventsLocal();
-    events.unshift({ id, name });
+    events.unshift({ id, name, event_user: creds.username, event_password: creds.password });
     saveEventsLocal(events);
   }
-  return { id, name };
+  return { id, name, event_user: creds.username, event_password: creds.password };
 }
 
 async function eventExists(eventId) {
+  const event = await getEvent(eventId);
+  return Boolean(event);
+}
+
+async function getEvent(eventId) {
   if (pool) {
-    const result = await pool.query('SELECT id FROM events WHERE id = $1', [eventId]);
-    return result.rowCount > 0;
+    const result = await pool.query(
+      'SELECT id, name, event_user, event_password FROM events WHERE id = $1',
+      [eventId]
+    );
+    return result.rows[0] || null;
   }
   const events = loadEventsLocal();
-  return events.some((evt) => evt.id === eventId);
+  return events.find((evt) => evt.id === eventId) || null;
 }
 
 async function recordPhoto(eventId, filePath) {
@@ -172,6 +341,17 @@ const upload = multer({
   limits: { fileSize: 25 * 1024 * 1024 }
 });
 
+function isAuthorizedForEvent(req, event) {
+  const cookies = parseCookies(req);
+  const token = cookies.eventcam_auth;
+  const payload = decodeAuthToken(token);
+  if (!payload) return false;
+  if (payload.eventId !== event.id) return false;
+  if (payload.user !== event.event_user) return false;
+  if (payload.exp && Date.now() > payload.exp) return false;
+  return true;
+}
+
 app.get('/', async (req, res) => {
   const eventId = req.query.event;
   if (!eventId) {
@@ -179,18 +359,137 @@ app.get('/', async (req, res) => {
     return;
   }
 
-  const exists = await eventExists(eventId);
-  if (!exists) {
+  const event = await getEvent(eventId);
+  if (!event) {
     res.status(404).send(renderPage('Event Not Found', `<p class="muted">Event not found.</p>`));
+    return;
+  }
+
+  if (!isAuthorizedForEvent(req, event)) {
+    res.redirect(`/login?event=${encodeURIComponent(eventId)}`);
     return;
   }
 
   res.send(renderCapturePage(eventId));
 });
 
+app.get('/event/dashboard', async (req, res) => {
+  const eventId = req.query.event;
+  if (!eventId) {
+    res.status(400).send(renderPage('Missing Event', '<p class="muted">Missing event id.</p>'));
+    return;
+  }
+  const event = await getEvent(eventId);
+  if (!event) {
+    res.status(404).send(renderPage('Event Not Found', '<p class="muted">Event not found.</p>'));
+    return;
+  }
+  if (!isAuthorizedForEvent(req, event)) {
+    res.redirect(`/login?event=${encodeURIComponent(eventId)}`);
+    return;
+  }
+
+  const files = listPhotosForEvent(eventId);
+  const gallery = files.map((file) => `
+    <a class="thumb" href="/event/media/${encodeURIComponent(eventId)}/${encodeURIComponent(file)}" target="_blank" rel="noopener">
+      <img src="/event/media/${encodeURIComponent(eventId)}/${encodeURIComponent(file)}" alt="Photo" />
+    </a>
+  `).join('');
+
+  const content = `
+    <section class="hero">
+      <h1>${escapeHtml(event.name)}</h1>
+      <p class="muted">Your private event gallery.</p>
+    </section>
+    <section class="panel">
+      <div class="row">
+        <a href="/event/download?event=${encodeURIComponent(eventId)}">
+          <button type="button">Download all photos</button>
+        </a>
+        <a href="/?event=${encodeURIComponent(eventId)}">
+          <button type="button">Back to camera</button>
+        </a>
+      </div>
+    </section>
+    <section class="gallery">
+      ${gallery || '<p class="muted">No photos yet.</p>'}
+    </section>
+  `;
+
+  res.send(renderPage('Event Dashboard', content));
+});
+
+app.get('/event/media/:eventId/:filename', async (req, res) => {
+  const eventId = req.params.eventId;
+  const filename = path.basename(req.params.filename);
+  const event = await getEvent(eventId);
+  if (!event) {
+    res.status(404).send('Event not found.');
+    return;
+  }
+  if (!isAuthorizedForEvent(req, event)) {
+    res.status(401).send('Authentication required.');
+    return;
+  }
+  const filePath = path.join(PHOTOS_DIR, eventId, filename);
+  res.sendFile(filePath);
+});
+
+app.get('/event/download', async (req, res) => {
+  const eventId = req.query.event;
+  if (!eventId) {
+    res.status(400).send('Missing event id.');
+    return;
+  }
+  const event = await getEvent(eventId);
+  if (!event) {
+    res.status(404).send('Event not found.');
+    return;
+  }
+  if (!isAuthorizedForEvent(req, event)) {
+    res.status(401).send('Authentication required.');
+    return;
+  }
+
+  const files = listPhotosForEvent(eventId);
+  if (!files.length) {
+    res.status(404).send('No photos to download.');
+    return;
+  }
+
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Disposition', `attachment; filename="event-${eventId}-photos.zip"`);
+
+  const archive = archiver('zip', { zlib: { level: 9 } });
+  archive.on('error', (err) => {
+    res.status(500).send(err.message);
+  });
+
+  archive.pipe(res);
+  for (const file of files) {
+    const filePath = path.join(PHOTOS_DIR, eventId, file);
+    archive.file(filePath, { name: file });
+  }
+  archive.finalize();
+});
+
 app.get('/admin', requireAdmin, async (req, res) => {
   const events = await listEvents();
   const baseUrl = baseUrlFromRequest(req);
+  const passwordNotice = (() => {
+    switch (req.query.pw) {
+      case 'changed':
+        return '<p class="status">Password updated.</p>';
+      case 'mismatch':
+        return '<p class="muted">New passwords do not match.</p>';
+      case 'weak':
+        return '<p class="muted">New password must be at least 8 characters.</p>';
+      case 'invalid':
+        return '<p class="muted">Current password is incorrect.</p>';
+      default:
+        return '';
+    }
+  })();
 
   const cards = await Promise.all(events.map(async (evt) => {
     const url = `${baseUrl}/?event=${evt.id}`;
@@ -200,6 +499,7 @@ app.get('/admin', requireAdmin, async (req, res) => {
       <div class="card">
         <h3>${escapeHtml(evt.name)}</h3>
         <p class="muted">Event ID: ${evt.id}</p>
+        <p class="muted">Login: ${escapeHtml(evt.event_user || '')} / ${escapeHtml(evt.event_password || '')}</p>
         <img src="${qr}" alt="QR code for ${escapeHtml(evt.name)}" />
         <p><a href="${url}">${url}</a></p>
         <p><a href="${galleryUrl}">View photos</a></p>
@@ -218,6 +518,16 @@ app.get('/admin', requireAdmin, async (req, res) => {
         <button type="submit">Create Event</button>
       </form>
     </section>
+    <section class="panel">
+      <h3>Change Admin Password</h3>
+      ${passwordNotice}
+      <form method="POST" action="/admin/password" class="row">
+        <input type="password" name="currentPassword" placeholder="Current password" autocomplete="current-password" required />
+        <input type="password" name="newPassword" placeholder="New password" autocomplete="new-password" required />
+        <input type="password" name="confirmPassword" placeholder="Confirm new password" autocomplete="new-password" required />
+        <button type="submit">Update Password</button>
+      </form>
+    </section>
     <section class="grid">
       ${cards.join('') || '<p class="muted">No events yet.</p>'}
     </section>
@@ -230,6 +540,77 @@ app.post('/admin/create', requireAdmin, async (req, res) => {
   const name = (req.body.name || DEFAULT_EVENT_NAME).trim() || DEFAULT_EVENT_NAME;
   await createEvent(name);
   res.redirect('/admin');
+});
+
+app.post('/admin/password', requireAdmin, (req, res) => {
+  const currentPassword = String(req.body.currentPassword || '');
+  const newPassword = String(req.body.newPassword || '');
+  const confirmPassword = String(req.body.confirmPassword || '');
+
+  if (!verifyPassword(currentPassword, adminConfig)) {
+    res.redirect('/admin?pw=invalid');
+    return;
+  }
+  if (newPassword.length < 8) {
+    res.redirect('/admin?pw=weak');
+    return;
+  }
+  if (newPassword !== confirmPassword) {
+    res.redirect('/admin?pw=mismatch');
+    return;
+  }
+
+  const nextConfig = {
+    user: adminConfig.user,
+    ...hashPassword(newPassword)
+  };
+  adminConfig.salt = nextConfig.salt;
+  adminConfig.hash = nextConfig.hash;
+  adminConfig.iterations = nextConfig.iterations;
+  saveAdminConfig(adminConfig);
+  res.redirect('/admin?pw=changed');
+});
+
+app.get('/login', async (req, res) => {
+  const eventId = req.query.event;
+  if (!eventId) {
+    res.status(400).send(renderPage('Missing Event', '<p class="muted">Missing event id.</p>'));
+    return;
+  }
+  const event = await getEvent(eventId);
+  if (!event) {
+    res.status(404).send(renderPage('Event Not Found', '<p class="muted">Event not found.</p>'));
+    return;
+  }
+  const error = req.query.error === 'invalid' ? 'Invalid credentials.' : '';
+  res.send(renderLoginPage(eventId, event.name, error));
+});
+
+app.post('/login', async (req, res) => {
+  const eventId = String(req.body.eventId || '');
+  const username = String(req.body.username || '');
+  const password = String(req.body.password || '');
+  if (!eventId) {
+    res.status(400).send(renderPage('Missing Event', '<p class="muted">Missing event id.</p>'));
+    return;
+  }
+  const event = await getEvent(eventId);
+  if (!event) {
+    res.status(404).send(renderPage('Event Not Found', '<p class="muted">Event not found.</p>'));
+    return;
+  }
+  if (username !== event.event_user || password !== event.event_password) {
+    res.send(renderLoginPage(eventId, event.name, 'Invalid credentials.'));
+    return;
+  }
+
+  const payload = {
+    eventId: event.id,
+    user: event.event_user,
+    exp: Date.now() + 1000 * 60 * 60 * 24 * 7
+  };
+  setAuthCookie(req, res, encodeAuthToken(payload));
+  res.redirect(`/?event=${encodeURIComponent(eventId)}`);
 });
 
 app.get('/admin/photos', requireAdmin, async (req, res) => {
@@ -287,9 +668,14 @@ app.post('/upload', upload.single('photo'), async (req, res) => {
     return;
   }
 
-  const exists = await eventExists(eventId);
-  if (!exists) {
+  const event = await getEvent(eventId);
+  if (!event) {
     res.status(404).json({ ok: false, error: 'Event not found' });
+    return;
+  }
+
+  if (!isAuthorizedForEvent(req, event)) {
+    res.status(401).json({ ok: false, error: 'Authentication required' });
     return;
   }
 
@@ -337,6 +723,9 @@ function renderCapturePage(eventId) {
       </section>
       <section class="controls">
         <button id="capture">Take Photo</button>
+        <a href="/event/dashboard?event=${encodeURIComponent(eventId)}">
+          <button type="button">Event dashboard</button>
+        </a>
       </section>
       <section class="status" id="status">Ready.</section>
     </main>
@@ -346,6 +735,24 @@ function renderCapturePage(eventId) {
     <script src="/static/app.js"></script>
   </body>
   </html>`;
+}
+
+function renderLoginPage(eventId, eventName, errorMessage) {
+  return renderPage('Event Login', `
+    <section class="hero">
+      <h1>${escapeHtml(eventName)}</h1>
+      <p class="muted">Enter the event login to continue.</p>
+    </section>
+    <section class="panel">
+      ${errorMessage ? `<p class="muted">${escapeHtml(errorMessage)}</p>` : ''}
+      <form method="POST" action="/login" class="row">
+        <input type="hidden" name="eventId" value="${escapeHtml(eventId)}" />
+        <input type="text" name="username" placeholder="Username" autocomplete="username" required />
+        <input type="password" name="password" placeholder="Password" autocomplete="current-password" required />
+        <button type="submit">Continue</button>
+      </form>
+    </section>
+  `);
 }
 
 function escapeHtml(value) {

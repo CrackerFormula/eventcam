@@ -79,6 +79,27 @@ button:disabled {
   gap: 18px;
 }
 
+.gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 16px;
+}
+
+.thumb {
+  display: block;
+  background: var(--card);
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: var(--shadow);
+}
+
+.thumb img {
+  width: 100%;
+  height: 160px;
+  object-fit: cover;
+  display: block;
+}
+
 .card {
   background: var(--card);
   padding: 18px;
