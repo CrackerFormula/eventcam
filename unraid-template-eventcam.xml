@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<Container>
+  <Name>EventCam</Name>
+  <Repository>yourrepo/eventcam:latest</Repository>
+  <Registry>https://ghcr.io</Registry>
+  <Network>br0</Network>
+  <MyIP></MyIP>
+  <Shell>bash</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://your-domain.example/support</Support>
+  <Project>https://your-domain.example/eventcam</Project>
+  <Overview>Self-hosted event camera app. Guests scan a QR code to join an event album, take photos, and uploads are saved automatically. For 100+ concurrent guests, use an external Postgres database.</Overview>
+  <WebUI>http://[IP]:[PORT:5000]/</WebUI>
+  <TemplateURL></TemplateURL>
+  <Category>MediaApp:Photos</Category>
+  <Icon>https://your-domain.example/assets/eventcam-icon.png</Icon>
+  <ExtraParams>--restart=unless-stopped</ExtraParams>
+  <!-- Notes:
+       - Set Repository to your published image (registry/user/image:tag).
+       - When using br0, DB_HOST should be the Postgres container IP. -->
+
+  <Config Name="WebUI Port" Target="5000" Default="5000" Mode="tcp" Description="Web interface port" Type="Port" Display="always" Required="true" Mask="false">5000</Config>
+  <Config Name="App Config" Target="/config" Default="/mnt/user/appdata/eventcam" Mode="rw" Description="App configuration and database" Type="Path" Display="always" Required="true" Mask="false"/>
+  <Config Name="Event Photos" Target="/photos" Default="/mnt/user/event-photos" Mode="rw" Description="Uploaded event photos" Type="Path" Display="always" Required="true" Mask="false"/>
+
+  <Config Name="Public Base URL" Target="BASE_URL" Default="http://[IP]:[PORT:5000]" Mode="" Description="Public URL used in QR codes" Type="Variable" Display="always" Required="true" Mask="false"/>
+  <Config Name="Default Event Name" Target="DEFAULT_EVENT_NAME" Default="My Event" Mode="" Description="Default album name for new events" Type="Variable" Display="always" Required="false" Mask="false"/>
+  <Config Name="Allow Guest Uploads" Target="ALLOW_GUEST_UPLOADS" Default="true" Mode="" Description="Allow guests to upload without accounts" Type="Variable" Display="always" Required="true" Mask="false"/>
+  <Config Name="Timezone" Target="TZ" Default="America/Los_Angeles" Mode="" Description="Container timezone" Type="Variable" Display="always" Required="true" Mask="false"/>
+  <Config Name="DB Host" Target="DB_HOST" Default="eventcam-postgres" Mode="" Description="Postgres host/IP (set to Postgres container IP if using br0)" Type="Variable" Display="always" Required="false" Mask="false"/>
+  <Config Name="DB Port" Target="DB_PORT" Default="5432" Mode="" Description="Postgres port" Type="Variable" Display="always" Required="false" Mask="false"/>
+  <Config Name="DB Name" Target="DB_NAME" Default="eventcam" Mode="" Description="Postgres database name" Type="Variable" Display="always" Required="false" Mask="false"/>
+  <Config Name="DB User" Target="DB_USER" Default="eventcam" Mode="" Description="Postgres username" Type="Variable" Display="always" Required="false" Mask="false"/>
+  <Config Name="DB Password" Target="DB_PASSWORD" Default="" Mode="" Description="Postgres password" Type="Variable" Display="always" Required="false" Mask="true"/>
+  <Config Name="DB SSL Mode" Target="DB_SSLMODE" Default="disable" Mode="" Description="Postgres SSL mode (disable, require, verify-full)" Type="Variable" Display="always" Required="false" Mask="false"/>
+</Container>

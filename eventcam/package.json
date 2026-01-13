@@ -1,0 +1,16 @@
+{
+  "name": "eventcam",
+  "version": "0.1.0",
+  "description": "Self-hosted event camera app",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "multer": "^1.4.5-lts.1",
+    "pg": "^8.11.5",
+    "qrcode": "^1.5.3"
+  }
+}

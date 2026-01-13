@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<Container>
+  <Name>EventCam-Postgres</Name>
+  <Repository>postgres:15</Repository>
+  <Registry>https://registry.hub.docker.com</Registry>
+  <Network>br0</Network>
+  <MyIP></MyIP>
+  <Shell>bash</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://www.postgresql.org/docs/</Support>
+  <Project>https://www.postgresql.org/</Project>
+  <Overview>Postgres database for EventCam. Recommended for 100+ concurrent guests.</Overview>
+  <WebUI></WebUI>
+  <TemplateURL></TemplateURL>
+  <Category>Database</Category>
+  <Icon>https://www.postgresql.org/media/img/about/press/elephant.png</Icon>
+  <ExtraParams>--restart=unless-stopped</ExtraParams>
+  <!-- Notes:
+       - Set DB_PASSWORD before starting.
+       - When using br0, assign a static IP or record the container IP for DB_HOST. -->
+
+  <Config Name="Postgres Port" Target="5432" Default="5432" Mode="tcp" Description="Postgres port" Type="Port" Display="always" Required="true" Mask="false">5432</Config>
+  <Config Name="Database Data" Target="/var/lib/postgresql/data" Default="/mnt/user/appdata/eventcam-postgres" Mode="rw" Description="Postgres data directory" Type="Path" Display="always" Required="true" Mask="false"/>
+
+  <Config Name="DB Name" Target="POSTGRES_DB" Default="eventcam" Mode="" Description="Initial database name" Type="Variable" Display="always" Required="true" Mask="false"/>
+  <Config Name="DB User" Target="POSTGRES_USER" Default="eventcam" Mode="" Description="Initial database user" Type="Variable" Display="always" Required="true" Mask="false"/>
+  <Config Name="DB Password" Target="POSTGRES_PASSWORD" Default="" Mode="" Description="Initial database password" Type="Variable" Display="always" Required="true" Mask="true"/>
+  <Config Name="Timezone" Target="TZ" Default="America/Los_Angeles" Mode="" Description="Container timezone" Type="Variable" Display="always" Required="true" Mask="false"/>
+</Container>
