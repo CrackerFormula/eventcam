@@ -49,3 +49,11 @@ docker login
 docker push crackerformula/eventcam:ai
 ```
 4) Update Unraid template `Repository` to match the tag if it changes.
+
+## First run checklist (Unraid)
+
+1) Deploy Postgres with `unraid-template-eventcam-postgres.xml` (br0 recommended).
+2) Note the Postgres container IP on br0.
+3) Deploy EventCam with `unraid-template-eventcam.xml`.
+4) Set `DB_HOST` to the Postgres IP, `BASE_URL` to your public/lan URL, and map `/photos` to your share.
+5) Open `http://<host>:5000/admin`, create an event, and print/share the QR code.
