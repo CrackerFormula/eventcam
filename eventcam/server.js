@@ -10,7 +10,7 @@ const { Pool } = require('pg');
 
 const app = express();
 
-const PORT = Number(process.env.PORT || 5000);
+const PORT = Number(process.env.PORT || 5001);
 const BASE_URL_ENV = process.env.BASE_URL || '';
 const DEFAULT_EVENT_NAME = process.env.DEFAULT_EVENT_NAME || 'My Event';
 const ALLOW_GUEST_UPLOADS = (process.env.ALLOW_GUEST_UPLOADS || 'true').toLowerCase() === 'true';
@@ -31,6 +31,9 @@ const DB_SSLMODE = process.env.DB_SSLMODE || 'disable';
 const EVENTS_FILE = path.join(CONFIG_DIR, 'events.json');
 const ADMIN_FILE = path.join(CONFIG_DIR, 'admin.json');
 const AUTH_SECRET_FILE = path.join(CONFIG_DIR, 'auth-secret');
+const UPLOADS_FILE = path.join(CONFIG_DIR, 'uploads.json');
+
+const pendingEventCredentials = new Map();
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
@@ -80,6 +83,19 @@ function parseCookies(req) {
   }, {});
 }
 
+function appendSetCookie(res, value) {
+  const current = res.getHeader('Set-Cookie');
+  if (!current) {
+    res.setHeader('Set-Cookie', value);
+    return;
+  }
+  if (Array.isArray(current)) {
+    res.setHeader('Set-Cookie', current.concat(value));
+    return;
+  }
+  res.setHeader('Set-Cookie', [current, value]);
+}
+
 const AUTH_SECRET = loadAuthSecret();
 
 function signToken(value) {
@@ -96,7 +112,10 @@ function decodeAuthToken(token) {
   if (!token) return null;
   const [body, signature] = token.split('.');
   if (!body || !signature) return null;
-  if (signToken(body) !== signature) return null;
+  const expected = Buffer.from(signToken(body), 'hex');
+  const actual = Buffer.from(signature, 'hex');
+  if (expected.length !== actual.length) return null;
+  if (!crypto.timingSafeEqual(expected, actual)) return null;
   try {
     return JSON.parse(base64UrlDecode(body));
   } catch (err) {
@@ -116,11 +135,22 @@ function setAuthCookie(req, res, token) {
   if (secure) {
     attributes.push('Secure');
   }
-  res.setHeader('Set-Cookie', attributes.join('; '));
+  appendSetCookie(res, attributes.join('; '));
 }
 
-function clearAuthCookie(res) {
-  res.setHeader('Set-Cookie', 'eventcam_auth=; Path=/; Max-Age=0; SameSite=Lax');
+function clearAuthCookie(req, res) {
+  const secure = req.secure || req.headers['x-forwarded-proto'] === 'https';
+  const attributes = [
+    'eventcam_auth=',
+    'Path=/',
+    'HttpOnly',
+    'SameSite=Lax',
+    'Max-Age=0'
+  ];
+  if (secure) {
+    attributes.push('Secure');
+  }
+  appendSetCookie(res, attributes.join('; '));
 }
 
 function baseUrlFromRequest(req) {
@@ -133,6 +163,65 @@ function generateEventCredentials() {
   const username = `guest-${crypto.randomBytes(3).toString('hex')}`;
   const password = crypto.randomBytes(9).toString('base64').replace(/[^a-zA-Z0-9]/g, '').slice(0, 12);
   return { username, password };
+}
+
+const DEVICE_ALIASES = [
+  'Disco Llama',
+  'Cosmic Otter',
+  'Sassy Cactus',
+  'Pixel Penguin',
+  'Neon Narwhal',
+  'Waffle Wizard',
+  'Robo Raccoon',
+  'Turbo Turtle',
+  'Laser Lemur',
+  'Snazzy Sloth',
+  'Banana Bandit',
+  'Sparkle Badger',
+  'Moonlit Moose',
+  'Funky Fox',
+  'Jelly Jaguar'
+];
+
+function generateDeviceAlias() {
+  return DEVICE_ALIASES[Math.floor(Math.random() * DEVICE_ALIASES.length)];
+}
+
+function setDeviceCookie(req, res, id, alias) {
+  const secure = req.secure || req.headers['x-forwarded-proto'] === 'https';
+  const baseAttributes = [
+    'Path=/',
+    'SameSite=Lax',
+    `Max-Age=${60 * 60 * 24 * 365}`
+  ];
+  if (secure) {
+    baseAttributes.push('Secure');
+  }
+  appendSetCookie(res, [`eventcam_device=${encodeURIComponent(id)}`].concat(baseAttributes).join('; '));
+  appendSetCookie(res, [`eventcam_alias=${encodeURIComponent(alias)}`].concat(baseAttributes).join('; '));
+}
+
+function ensureDeviceCookie(req, res) {
+  const cookies = parseCookies(req);
+  let deviceId = cookies.eventcam_device;
+  let deviceAlias = cookies.eventcam_alias;
+  let changed = false;
+  if (!deviceId) {
+    deviceId = crypto.randomBytes(10).toString('hex');
+    changed = true;
+  }
+  if (!deviceAlias) {
+    deviceAlias = generateDeviceAlias();
+    changed = true;
+  }
+  if (changed) {
+    setDeviceCookie(req, res, deviceId, deviceAlias);
+  }
+  return { id: deviceId, alias: deviceAlias };
+}
+
+function rememberEventPassword(eventId, password) {
+  pendingEventCredentials.set(eventId, password);
 }
 
 function hashPassword(password, salt = crypto.randomBytes(16).toString('hex'), iterations = 100000) {
@@ -173,6 +262,50 @@ function verifyPassword(password, config) {
   const actual = Buffer.from(test, 'hex');
   if (expected.length !== actual.length) return false;
   return crypto.timingSafeEqual(expected, actual);
+}
+
+function verifyEventPassword(password, event) {
+  if (!event.event_password_hash || !event.event_password_salt || !event.event_password_iterations) {
+    return false;
+  }
+  const test = crypto.pbkdf2Sync(
+    password,
+    event.event_password_salt,
+    event.event_password_iterations,
+    64,
+    'sha256'
+  ).toString('hex');
+  const expected = Buffer.from(event.event_password_hash, 'hex');
+  const actual = Buffer.from(test, 'hex');
+  if (expected.length !== actual.length) return false;
+  return crypto.timingSafeEqual(expected, actual);
+}
+
+function loadUploadsLocal() {
+  try {
+    const raw = fs.readFileSync(UPLOADS_FILE, 'utf8');
+    return JSON.parse(raw);
+  } catch (err) {
+    return { events: {} };
+  }
+}
+
+function saveUploadsLocal(data) {
+  ensureDir(CONFIG_DIR);
+  fs.writeFileSync(UPLOADS_FILE, JSON.stringify(data, null, 2), 'utf8');
+}
+
+function recordUploadLocal(eventId, device) {
+  const uploads = loadUploadsLocal();
+  if (!uploads.events) uploads.events = {};
+  if (!uploads.events[eventId]) {
+    uploads.events[eventId] = { devices: {} };
+  }
+  uploads.events[eventId].devices[device.id] = {
+    alias: device.alias,
+    lastSeen: new Date().toISOString()
+  };
+  saveUploadsLocal(uploads);
 }
 
 const adminConfig = loadAdminConfig();
@@ -226,6 +359,9 @@ async function initDb() {
   `);
 
   await pool.query(`ALTER TABLE events ADD COLUMN IF NOT EXISTS event_user TEXT;`);
+  await pool.query(`ALTER TABLE events ADD COLUMN IF NOT EXISTS event_password_hash TEXT;`);
+  await pool.query(`ALTER TABLE events ADD COLUMN IF NOT EXISTS event_password_salt TEXT;`);
+  await pool.query(`ALTER TABLE events ADD COLUMN IF NOT EXISTS event_password_iterations INTEGER;`);
   await pool.query(`ALTER TABLE events ADD COLUMN IF NOT EXISTS event_password TEXT;`);
 
   await pool.query(`
@@ -237,13 +373,34 @@ async function initDb() {
     );
   `);
 
-  const missing = await pool.query('SELECT id FROM events WHERE event_user IS NULL OR event_password IS NULL');
+  await pool.query(`ALTER TABLE photos ADD COLUMN IF NOT EXISTS size_bytes BIGINT;`);
+  await pool.query(`ALTER TABLE photos ADD COLUMN IF NOT EXISTS device_id TEXT;`);
+  await pool.query(`ALTER TABLE photos ADD COLUMN IF NOT EXISTS device_alias TEXT;`);
+
+  const missing = await pool.query(`
+    SELECT id, event_user, event_password, event_password_hash
+    FROM events
+    WHERE event_user IS NULL OR event_password_hash IS NULL
+  `);
   for (const row of missing.rows) {
-    const creds = generateEventCredentials();
+    const existingPassword = row.event_password;
+    const creds = existingPassword
+      ? { username: row.event_user || `guest-${crypto.randomBytes(3).toString('hex')}`, password: existingPassword }
+      : generateEventCredentials();
+    const hashed = hashPassword(creds.password);
     await pool.query(
-      'UPDATE events SET event_user = $1, event_password = $2 WHERE id = $3',
-      [creds.username, creds.password, row.id]
+      `UPDATE events
+       SET event_user = $1,
+           event_password_hash = $2,
+           event_password_salt = $3,
+           event_password_iterations = $4,
+           event_password = NULL
+       WHERE id = $5`,
+      [creds.username, hashed.hash, hashed.salt, hashed.iterations, row.id]
     );
+    if (!existingPassword) {
+      rememberEventPassword(row.id, creds.password);
+    }
   }
 }
 
@@ -253,10 +410,26 @@ function loadEventsLocal() {
     const events = JSON.parse(raw);
     let updated = false;
     events.forEach((evt) => {
-      if (!evt.event_user || !evt.event_password) {
+      if (!evt.event_user) {
+        evt.event_user = `guest-${crypto.randomBytes(3).toString('hex')}`;
+        updated = true;
+      }
+      if (evt.event_password) {
+        const hashed = hashPassword(evt.event_password);
+        evt.event_password_hash = hashed.hash;
+        evt.event_password_salt = hashed.salt;
+        evt.event_password_iterations = hashed.iterations;
+        delete evt.event_password;
+        updated = true;
+      }
+      if (!evt.event_password_hash) {
         const creds = generateEventCredentials();
-        evt.event_user = creds.username;
-        evt.event_password = creds.password;
+        const hashed = hashPassword(creds.password);
+        evt.event_user = evt.event_user || creds.username;
+        evt.event_password_hash = hashed.hash;
+        evt.event_password_salt = hashed.salt;
+        evt.event_password_iterations = hashed.iterations;
+        rememberEventPassword(evt.id, creds.password);
         updated = true;
       }
     });
@@ -276,7 +449,11 @@ function saveEventsLocal(events) {
 
 async function listEvents() {
   if (pool) {
-    const result = await pool.query('SELECT id, name, event_user, event_password FROM events ORDER BY created_at DESC');
+    const result = await pool.query(`
+      SELECT id, name, event_user, event_password_hash, event_password_salt, event_password_iterations
+      FROM events
+      ORDER BY created_at DESC
+    `);
     return result.rows;
   }
   return loadEventsLocal();
@@ -285,18 +462,26 @@ async function listEvents() {
 async function createEvent(name) {
   const id = safeId();
   const creds = generateEventCredentials();
+  const hashed = hashPassword(creds.password);
   if (pool) {
-    await pool.query('INSERT INTO events (id, name, event_user, event_password) VALUES ($1, $2, $3, $4)', [
-      id,
-      name,
-      creds.username,
-      creds.password
-    ]);
+    await pool.query(
+      `INSERT INTO events (id, name, event_user, event_password_hash, event_password_salt, event_password_iterations)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [id, name, creds.username, hashed.hash, hashed.salt, hashed.iterations]
+    );
   } else {
     const events = loadEventsLocal();
-    events.unshift({ id, name, event_user: creds.username, event_password: creds.password });
+    events.unshift({
+      id,
+      name,
+      event_user: creds.username,
+      event_password_hash: hashed.hash,
+      event_password_salt: hashed.salt,
+      event_password_iterations: hashed.iterations
+    });
     saveEventsLocal(events);
   }
+  rememberEventPassword(id, creds.password);
   return { id, name, event_user: creds.username, event_password: creds.password };
 }
 
@@ -308,7 +493,9 @@ async function eventExists(eventId) {
 async function getEvent(eventId) {
   if (pool) {
     const result = await pool.query(
-      'SELECT id, name, event_user, event_password FROM events WHERE id = $1',
+      `SELECT id, name, event_user, event_password_hash, event_password_salt, event_password_iterations
+       FROM events
+       WHERE id = $1`,
       [eventId]
     );
     return result.rows[0] || null;
@@ -317,14 +504,17 @@ async function getEvent(eventId) {
   return events.find((evt) => evt.id === eventId) || null;
 }
 
-async function recordPhoto(eventId, filePath) {
+async function recordPhoto(eventId, filePath, meta = {}) {
   if (!pool) return;
-  await pool.query('INSERT INTO photos (event_id, path) VALUES ($1, $2)', [eventId, filePath]);
+  await pool.query(
+    'INSERT INTO photos (event_id, path, size_bytes, device_id, device_alias) VALUES ($1, $2, $3, $4, $5)',
+    [eventId, filePath, meta.sizeBytes || 0, meta.deviceId || null, meta.deviceAlias || null]
+  );
 }
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
-    const eventId = req.body.eventId || req.query.event;
+    const eventId = (req.event && req.event.id) || req.body.eventId || req.query.event;
     const eventPath = path.join(PHOTOS_DIR, eventId || 'unknown');
     ensureDir(eventPath);
     cb(null, eventPath);
@@ -352,6 +542,98 @@ function isAuthorizedForEvent(req, event) {
   return true;
 }
 
+function getEventFileStats(eventId) {
+  const files = listPhotosForEvent(eventId);
+  let bytes = 0;
+  files.forEach((file) => {
+    try {
+      const stat = fs.statSync(path.join(PHOTOS_DIR, eventId, file));
+      bytes += stat.size;
+    } catch (err) {
+      // Ignore missing files.
+    }
+  });
+  return { photos: files.length, bytes };
+}
+
+function formatBytes(bytes) {
+  if (!bytes) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = bytes;
+  let index = 0;
+  while (value >= 1024 && index < units.length - 1) {
+    value /= 1024;
+    index += 1;
+  }
+  return `${value.toFixed(value >= 10 || index === 0 ? 0 : 1)} ${units[index]}`;
+}
+
+async function getStatsForEvents(events) {
+  if (pool) {
+    const perEventRows = await pool.query(`
+      SELECT event_id,
+             COUNT(*)::int AS photos,
+             COALESCE(SUM(size_bytes), 0)::bigint AS bytes,
+             COUNT(DISTINCT device_id)::int AS devices
+      FROM photos
+      GROUP BY event_id
+    `);
+    const perEvent = {};
+    perEventRows.rows.forEach((row) => {
+      perEvent[row.event_id] = {
+        photos: Number(row.photos),
+        bytes: Number(row.bytes),
+        devices: Number(row.devices)
+      };
+    });
+    const totalRow = await pool.query(`
+      SELECT COUNT(*)::int AS photos,
+             COALESCE(SUM(size_bytes), 0)::bigint AS bytes,
+             COUNT(DISTINCT device_id)::int AS devices
+      FROM photos
+    `);
+    const totals = totalRow.rows[0] || { photos: 0, bytes: 0, devices: 0 };
+    return { totals, perEvent };
+  }
+
+  const uploads = loadUploadsLocal();
+  const perEvent = {};
+  let totalPhotos = 0;
+  let totalBytes = 0;
+  const totalDevices = new Set();
+
+  events.forEach((evt) => {
+    const stats = getEventFileStats(evt.id);
+    totalPhotos += stats.photos;
+    totalBytes += stats.bytes;
+    const deviceMap = uploads.events?.[evt.id]?.devices || {};
+    Object.keys(deviceMap).forEach((id) => totalDevices.add(id));
+    perEvent[evt.id] = {
+      photos: stats.photos,
+      bytes: stats.bytes,
+      devices: Object.keys(deviceMap).length
+    };
+  });
+
+  return { totals: { photos: totalPhotos, bytes: totalBytes, devices: totalDevices.size }, perEvent };
+}
+
+async function loadEventFromRequest(req, res, next) {
+  const eventId = req.query.event || req.body.eventId || req.body.event;
+  if (!eventId) {
+    res.status(400).send('Missing event id.');
+    return;
+  }
+  const event = await getEvent(eventId);
+  if (!event) {
+    res.status(404).send('Event not found.');
+    return;
+  }
+  req.event = event;
+  next();
+}
+
+
 app.get('/', async (req, res) => {
   const eventId = req.query.event;
   if (!eventId) {
@@ -365,12 +647,8 @@ app.get('/', async (req, res) => {
     return;
   }
 
-  if (!isAuthorizedForEvent(req, event)) {
-    res.redirect(`/login?event=${encodeURIComponent(eventId)}`);
-    return;
-  }
-
-  res.send(renderCapturePage(eventId));
+  const device = ensureDeviceCookie(req, res);
+  res.send(renderCapturePage(eventId, device.alias));
 });
 
 app.get('/event/dashboard', async (req, res) => {
@@ -389,6 +667,8 @@ app.get('/event/dashboard', async (req, res) => {
     return;
   }
 
+  const device = ensureDeviceCookie(req, res);
+  const stats = (await getStatsForEvents([event])).perEvent[eventId] || { photos: 0, bytes: 0, devices: 0 };
   const files = listPhotosForEvent(eventId);
   const gallery = files.map((file) => `
     <a class="thumb" href="/event/media/${encodeURIComponent(eventId)}/${encodeURIComponent(file)}" target="_blank" rel="noopener">
@@ -402,6 +682,10 @@ app.get('/event/dashboard', async (req, res) => {
       <p class="muted">Your private event gallery.</p>
     </section>
     <section class="panel">
+      <p class="muted">Photos: ${stats.photos} · Devices: ${stats.devices} · Storage: ${formatBytes(stats.bytes)}</p>
+      <p class="muted">Your device alias: ${escapeHtml(device.alias)}</p>
+    </section>
+    <section class="panel">
       <div class="row">
         <a href="/event/download?event=${encodeURIComponent(eventId)}">
           <button type="button">Download all photos</button>
@@ -409,6 +693,13 @@ app.get('/event/dashboard', async (req, res) => {
         <a href="/?event=${encodeURIComponent(eventId)}">
           <button type="button">Back to camera</button>
         </a>
+        <a href="/logout?event=${encodeURIComponent(eventId)}">
+          <button type="button">Log out</button>
+        </a>
+        <form method="POST" action="/event/delete" onsubmit="return confirm('Delete this event and all photos?');">
+          <input type="hidden" name="event" value="${escapeHtml(eventId)}" />
+          <button type="submit">Delete event</button>
+        </form>
       </div>
     </section>
     <section class="gallery">
@@ -473,9 +764,59 @@ app.get('/event/download', async (req, res) => {
   archive.finalize();
 });
 
+app.post('/event/delete', async (req, res) => {
+  const eventId = req.body.event || req.query.event;
+  if (!eventId) {
+    res.status(400).send('Missing event id.');
+    return;
+  }
+  const event = await getEvent(eventId);
+  if (!event) {
+    res.status(404).send('Event not found.');
+    return;
+  }
+  if (!isAuthorizedForEvent(req, event)) {
+    res.status(401).send('Authentication required.');
+    return;
+  }
+
+  if (pool) {
+    await pool.query('DELETE FROM photos WHERE event_id = $1', [eventId]);
+    await pool.query('DELETE FROM events WHERE id = $1', [eventId]);
+  } else {
+    const events = loadEventsLocal();
+    const next = events.filter((evt) => evt.id !== eventId);
+    saveEventsLocal(next);
+    const uploads = loadUploadsLocal();
+    if (uploads.events && uploads.events[eventId]) {
+      delete uploads.events[eventId];
+      saveUploadsLocal(uploads);
+    }
+  }
+
+  const eventPath = path.join(PHOTOS_DIR, eventId);
+  try {
+    fs.rmSync(eventPath, { recursive: true, force: true });
+  } catch (err) {
+    // Ignore delete errors for now.
+  }
+
+  clearAuthCookie(req, res);
+  res.send(renderPage('Event Deleted', `
+    <section class="hero">
+      <h1>Event deleted</h1>
+      <p class="muted">This event and its photos were removed.</p>
+    </section>
+    <section class="panel">
+      <p><a href="/admin">Back to admin</a></p>
+    </section>
+  `));
+});
+
 app.get('/admin', requireAdmin, async (req, res) => {
   const events = await listEvents();
   const baseUrl = baseUrlFromRequest(req);
+  const stats = await getStatsForEvents(events);
   const passwordNotice = (() => {
     switch (req.query.pw) {
       case 'changed':
@@ -495,22 +836,44 @@ app.get('/admin', requireAdmin, async (req, res) => {
     const url = `${baseUrl}/?event=${evt.id}`;
     const qr = await qrcode.toDataURL(url, { margin: 1, width: 240 });
     const galleryUrl = `/admin/photos?event=${evt.id}`;
+    const eventStats = stats.perEvent[evt.id] || { photos: 0, bytes: 0, devices: 0 };
     return `
       <div class="card">
         <h3>${escapeHtml(evt.name)}</h3>
         <p class="muted">Event ID: ${evt.id}</p>
-        <p class="muted">Login: ${escapeHtml(evt.event_user || '')} / ${escapeHtml(evt.event_password || '')}</p>
+        <p class="muted">Login user: ${escapeHtml(evt.event_user || '')}</p>
+        <p class="muted">Photos: ${eventStats.photos} · Devices: ${eventStats.devices} · Storage: ${formatBytes(eventStats.bytes)}</p>
         <img src="${qr}" alt="QR code for ${escapeHtml(evt.name)}" />
         <p><a href="${url}">${url}</a></p>
         <p><a href="${galleryUrl}">View photos</a></p>
+        <form method="POST" action="/admin/regenerate">
+          <input type="hidden" name="eventId" value="${escapeHtml(evt.id)}" />
+          <button type="submit">Regenerate login</button>
+        </form>
       </div>
     `;
   }));
+
+  const pendingList = Array.from(pendingEventCredentials.entries()).map(([eventId, password]) => {
+    const eventName = events.find((evt) => evt.id === eventId)?.name || eventId;
+    const eventUser = events.find((evt) => evt.id === eventId)?.event_user || '';
+    return `
+      <div class="card">
+        <h3>${escapeHtml(eventName)}</h3>
+        <p class="muted">Event ID: ${escapeHtml(eventId)}</p>
+        <p class="muted">Login: ${escapeHtml(eventUser)} / ${escapeHtml(password)}</p>
+        <p class="muted">Copy this now; it will not be shown again after you refresh.</p>
+      </div>
+    `;
+  });
 
   const content = `
     <section class="hero">
       <h1>EventCam Admin</h1>
       <p>Create an event and share its QR code with guests.</p>
+    </section>
+    <section class="panel">
+      <p class="muted">All events: ${stats.totals.photos} photos · ${stats.totals.devices} devices · ${formatBytes(stats.totals.bytes)} stored</p>
     </section>
     <section class="panel">
       <form method="POST" action="/admin/create" class="row">
@@ -527,13 +890,27 @@ app.get('/admin', requireAdmin, async (req, res) => {
         <input type="password" name="confirmPassword" placeholder="Confirm new password" autocomplete="new-password" required />
         <button type="submit">Update Password</button>
       </form>
+      <div class="row">
+        <a href="/admin/logout">
+          <button type="button">Log out</button>
+        </a>
+      </div>
     </section>
+    ${pendingList.length ? `
+    <section class="panel">
+      <h3>New Event Credentials</h3>
+      <div class="grid">
+        ${pendingList.join('')}
+      </div>
+    </section>
+    ` : ''}
     <section class="grid">
       ${cards.join('') || '<p class="muted">No events yet.</p>'}
     </section>
   `;
 
   res.send(renderPage('EventCam Admin', content));
+  pendingEventCredentials.clear();
 });
 
 app.post('/admin/create', requireAdmin, async (req, res) => {
@@ -571,6 +948,52 @@ app.post('/admin/password', requireAdmin, (req, res) => {
   res.redirect('/admin?pw=changed');
 });
 
+app.get('/admin/logout', (req, res) => {
+  res.set('WWW-Authenticate', 'Basic realm="EventCam Admin"');
+  res.status(401).send('Logged out.');
+});
+
+app.post('/admin/regenerate', requireAdmin, async (req, res) => {
+  const eventId = String(req.body.eventId || '');
+  if (!eventId) {
+    res.redirect('/admin');
+    return;
+  }
+  const event = await getEvent(eventId);
+  if (!event) {
+    res.redirect('/admin');
+    return;
+  }
+  const creds = generateEventCredentials();
+  const hashed = hashPassword(creds.password);
+  if (pool) {
+    await pool.query(
+      `UPDATE events
+       SET event_user = $1,
+           event_password_hash = $2,
+           event_password_salt = $3,
+           event_password_iterations = $4
+       WHERE id = $5`,
+      [creds.username, hashed.hash, hashed.salt, hashed.iterations, eventId]
+    );
+  } else {
+    const events = loadEventsLocal();
+    const next = events.map((evt) => {
+      if (evt.id !== eventId) return evt;
+      return {
+        ...evt,
+        event_user: creds.username,
+        event_password_hash: hashed.hash,
+        event_password_salt: hashed.salt,
+        event_password_iterations: hashed.iterations
+      };
+    });
+    saveEventsLocal(next);
+  }
+  rememberEventPassword(eventId, creds.password);
+  res.redirect('/admin');
+});
+
 app.get('/login', async (req, res) => {
   const eventId = req.query.event;
   if (!eventId) {
@@ -583,7 +1006,18 @@ app.get('/login', async (req, res) => {
     return;
   }
   const error = req.query.error === 'invalid' ? 'Invalid credentials.' : '';
+  ensureDeviceCookie(req, res);
   res.send(renderLoginPage(eventId, event.name, error));
+});
+
+app.get('/logout', (req, res) => {
+  clearAuthCookie(req, res);
+  const eventId = req.query.event;
+  if (eventId) {
+    res.redirect(`/login?event=${encodeURIComponent(eventId)}`);
+    return;
+  }
+  res.redirect('/admin');
 });
 
 app.post('/login', async (req, res) => {
@@ -599,7 +1033,7 @@ app.post('/login', async (req, res) => {
     res.status(404).send(renderPage('Event Not Found', '<p class="muted">Event not found.</p>'));
     return;
   }
-  if (username !== event.event_user || password !== event.event_password) {
+  if (username !== event.event_user || !verifyEventPassword(password, event)) {
     res.send(renderLoginPage(eventId, event.name, 'Invalid credentials.'));
     return;
   }
@@ -656,35 +1090,27 @@ app.get('/admin/media/:eventId/:filename', requireAdmin, (req, res) => {
   res.sendFile(filePath);
 });
 
-app.post('/upload', upload.single('photo'), async (req, res) => {
-  if (!ALLOW_GUEST_UPLOADS) {
-    res.status(403).json({ ok: false, error: 'Guest uploads disabled' });
-    return;
-  }
-
-  const eventId = req.body.eventId || req.query.event;
-  if (!eventId) {
-    res.status(400).json({ ok: false, error: 'Missing event id' });
-    return;
-  }
-
-  const event = await getEvent(eventId);
-  if (!event) {
-    res.status(404).json({ ok: false, error: 'Event not found' });
-    return;
-  }
-
-  if (!isAuthorizedForEvent(req, event)) {
+app.post('/upload', loadEventFromRequest, (req, res, next) => {
+  if (!ALLOW_GUEST_UPLOADS && !isAuthorizedForEvent(req, req.event)) {
     res.status(401).json({ ok: false, error: 'Authentication required' });
     return;
   }
-
+  next();
+}, upload.single('photo'), async (req, res) => {
   if (!req.file) {
     res.status(400).json({ ok: false, error: 'No file uploaded' });
     return;
   }
 
-  await recordPhoto(eventId, req.file.path);
+  const device = ensureDeviceCookie(req, res);
+  await recordPhoto(req.event.id, req.file.path, {
+    sizeBytes: req.file.size || 0,
+    deviceId: device.id,
+    deviceAlias: device.alias
+  });
+  if (!pool) {
+    recordUploadLocal(req.event.id, device);
+  }
 
   res.json({ ok: true, path: req.file.path });
 });
@@ -706,7 +1132,7 @@ function renderPage(title, body) {
   </html>`;
 }
 
-function renderCapturePage(eventId) {
+function renderCapturePage(eventId, deviceAlias) {
   return `<!doctype html>
   <html lang="en">
   <head>
@@ -726,8 +1152,12 @@ function renderCapturePage(eventId) {
         <a href="/event/dashboard?event=${encodeURIComponent(eventId)}">
           <button type="button">Event dashboard</button>
         </a>
+        <a href="/logout?event=${encodeURIComponent(eventId)}">
+          <button type="button">Log out</button>
+        </a>
       </section>
       <section class="status" id="status">Ready.</section>
+      <section class="muted">Device alias: ${escapeHtml(deviceAlias || '')}</section>
     </main>
     <script>
       window.EVENT_ID = ${JSON.stringify(eventId)};

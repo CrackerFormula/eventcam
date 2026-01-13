@@ -6,7 +6,8 @@ Self-hosted event camera app with QR join and uploads to a shared album folder.
 
 1. Install deps: `npm install`
 2. Start: `npm start`
-3. Visit `http://localhost:5000/admin`
+3. Visit `http://localhost:5001/admin`
+4. Each event gets a unique login; new credentials show once in the admin view (use Regenerate login to rotate).
 
 ## Local HTTPS (phone camera support)
 
@@ -24,11 +25,11 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
 ```
 SSL_CERT_PATH=certs/cert.pem SSL_KEY_PATH=certs/key.pem npm start
 ```
-3) On your phone, open `https://<LAN_IP>:5000/admin` and trust the cert.
+3) On your phone, open `https://<LAN_IP>:5001/admin` and trust the cert.
 
 ## Environment variables
 
-- `PORT` (default 5000)
+- `PORT` (default 5001)
 - `BASE_URL` (optional, used for QR codes)
 - `DEFAULT_EVENT_NAME`
 - `ALLOW_GUEST_UPLOADS` (true/false)
@@ -44,10 +45,10 @@ SSL_CERT_PATH=certs/cert.pem SSL_KEY_PATH=certs/key.pem npm start
 Build: `docker build -t yourrepo/eventcam:latest .`
 Run:
 ```
-docker run -p 5000:5000 \
+docker run -p 5001:5001 \
   -v /path/to/config:/config \
   -v /path/to/photos:/photos \
-  -e BASE_URL="http://your-host:5000" \
+  -e BASE_URL="http://your-host:5001" \
   -e DB_HOST="postgres-host" \
   -e DB_USER="eventcam" \
   -e DB_PASSWORD="password" \
@@ -56,7 +57,7 @@ docker run -p 5000:5000 \
 
 Optional HTTPS (mount certs into the container):
 ```
-docker run -p 5000:5000 \
+docker run -p 5001:5001 \
   -v /path/to/config:/config \
   -v /path/to/photos:/photos \
   -v /path/to/certs:/certs \
@@ -87,4 +88,4 @@ docker push crackerformula/eventcam:ai
 2) Note the Postgres container IP on br0.
 3) Deploy EventCam with `unraid-template-eventcam.xml`.
 4) Set `DB_HOST` to the Postgres IP, `BASE_URL` to your public/lan URL, and map `/photos` to your share.
-5) Open `http://<host>:5000/admin`, create an event, and print/share the QR code.
+5) Open `http://<host>:5001/admin`, create an event, and print/share the QR code.
