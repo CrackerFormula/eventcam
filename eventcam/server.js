@@ -45,6 +45,12 @@ let uploadsDirty = false;
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use('/static', express.static(path.join(__dirname, 'public')));
+app.get('/styles.css', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'styles.css'));
+});
+app.get('/app.js', (req, res) => {
+  res.sendFile(path.join(__dirname, 'public', 'app.js'));
+});
 
 function ensureDir(dirPath) {
   fs.mkdirSync(dirPath, { recursive: true });
@@ -1367,7 +1373,7 @@ function renderPage(title, body, bodyClass = '') {
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>${escapeHtml(title)}</title>
-    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/styles.css" />
   </head>
   <body${classAttr}>
     <main>
@@ -1384,7 +1390,7 @@ function renderCapturePage(eventId, deviceAlias) {
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>EventCam</title>
-    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <main class="capture">
@@ -1407,7 +1413,7 @@ function renderCapturePage(eventId, deviceAlias) {
     <script>
       window.EVENT_ID = ${JSON.stringify(eventId)};
     </script>
-    <script src="/static/app.js"></script>
+    <script src="/app.js"></script>
   </body>
   </html>`;
 }
