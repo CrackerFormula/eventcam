@@ -33,3 +33,19 @@ docker run -p 5000:5000 \
   -e DB_PASSWORD="password" \
   yourrepo/eventcam:latest
 ```
+
+## Release checklist (Docker Hub)
+
+1) Build the image:
+```
+docker build -t crackerformula/eventcam:ai .
+```
+2) Log in to Docker Hub:
+```
+docker login
+```
+3) Push the image:
+```
+docker push crackerformula/eventcam:ai
+```
+4) Update Unraid template `Repository` to match the tag if it changes.
