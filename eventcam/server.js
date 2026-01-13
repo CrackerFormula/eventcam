@@ -1511,7 +1511,7 @@ function renderLandingPage() {
       </div>
       <div class="feature-card">
         <h3>Self-hosted</h3>
-        <p>Run on your own hardware with Docker, Unraid, or a VPS.</p>
+        <p><a href="https://github.com/CrackerFormula/eventcam" target="_blank" rel="noopener">Run on your own hardware with Docker, Unraid, or a VPS.</a></p>
       </div>
     </section>
 
