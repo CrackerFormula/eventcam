@@ -29,8 +29,8 @@
   <Config Name="Timezone" Target="TZ" Default="America/Los_Angeles" Mode="" Description="Container timezone" Type="Variable" Display="always" Required="true" Mask="false"/>
   <Config Name="DB Host" Target="DB_HOST" Default="eventcam-postgres" Mode="" Description="Postgres host/IP (set to Postgres container IP if using br0)" Type="Variable" Display="always" Required="false" Mask="false"/>
   <Config Name="DB Port" Target="DB_PORT" Default="5432" Mode="" Description="Postgres port" Type="Variable" Display="always" Required="false" Mask="false"/>
-  <Config Name="DB Name" Target="DB_NAME" Default="eventcam" Mode="" Description="Postgres database name" Type="Variable" Display="always" Required="false" Mask="false"/>
-  <Config Name="DB User" Target="DB_USER" Default="eventcam" Mode="" Description="Postgres username" Type="Variable" Display="always" Required="false" Mask="false"/>
-  <Config Name="DB Password" Target="DB_PASSWORD" Default="" Mode="" Description="Postgres password" Type="Variable" Display="always" Required="false" Mask="true"/>
+  <Config Name="DB Name" Target="DB_NAME" Default="change-me" Mode="" Description="Postgres database name (change this)" Type="Variable" Display="always" Required="false" Mask="false"/>
+  <Config Name="DB User" Target="DB_USER" Default="change-me" Mode="" Description="Postgres username (change this)" Type="Variable" Display="always" Required="false" Mask="false"/>
+  <Config Name="DB Password" Target="DB_PASSWORD" Default="change-me" Mode="" Description="Postgres password (change this)" Type="Variable" Display="always" Required="false" Mask="true"/>
   <Config Name="DB SSL Mode" Target="DB_SSLMODE" Default="disable" Mode="" Description="Postgres SSL mode (disable, require, verify-full)" Type="Variable" Display="always" Required="false" Mask="false"/>
 </Container>
