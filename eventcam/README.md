@@ -8,6 +8,24 @@ Self-hosted event camera app with QR join and uploads to a shared album folder.
 2. Start: `npm start`
 3. Visit `http://localhost:5000/admin`
 
+## Local HTTPS (phone camera support)
+
+Self-signed certs require trust on the phone before the camera will work.
+
+1) Generate a cert (replace `<LAN_IP>` with your Mac IP):
+```
+mkdir -p certs
+openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+  -keyout certs/key.pem -out certs/cert.pem \
+  -subj "/CN=eventcam.local" \
+  -addext "subjectAltName=DNS:localhost,IP:<LAN_IP>"
+```
+2) Run with HTTPS:
+```
+SSL_CERT_PATH=certs/cert.pem SSL_KEY_PATH=certs/key.pem npm start
+```
+3) On your phone, open `https://<LAN_IP>:5000/admin` and trust the cert.
+
 ## Environment variables
 
 - `PORT` (default 5000)
@@ -16,6 +34,8 @@ Self-hosted event camera app with QR join and uploads to a shared album folder.
 - `ALLOW_GUEST_UPLOADS` (true/false)
 - `PHOTOS_DIR` (default /photos)
 - `CONFIG_DIR` (default /config)
+- `SSL_CERT_PATH` / `SSL_KEY_PATH` (enable HTTPS)
+- `ADMIN_USER` / `ADMIN_PASSWORD` (protects `/admin` with Basic auth, defaults admin/admin)
 - Postgres:
   - `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_SSLMODE`
 
@@ -31,6 +51,17 @@ docker run -p 5000:5000 \
   -e DB_HOST="postgres-host" \
   -e DB_USER="eventcam" \
   -e DB_PASSWORD="password" \
+  yourrepo/eventcam:latest
+```
+
+Optional HTTPS (mount certs into the container):
+```
+docker run -p 5000:5000 \
+  -v /path/to/config:/config \
+  -v /path/to/photos:/photos \
+  -v /path/to/certs:/certs \
+  -e SSL_CERT_PATH="/certs/cert.pem" \
+  -e SSL_KEY_PATH="/certs/key.pem" \
   yourrepo/eventcam:latest
 ```
 

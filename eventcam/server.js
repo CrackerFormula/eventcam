@@ -1,4 +1,5 @@
 const express = require('express');
+const https = require('https');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
@@ -14,6 +15,10 @@ const DEFAULT_EVENT_NAME = process.env.DEFAULT_EVENT_NAME || 'My Event';
 const ALLOW_GUEST_UPLOADS = (process.env.ALLOW_GUEST_UPLOADS || 'true').toLowerCase() === 'true';
 const PHOTOS_DIR = process.env.PHOTOS_DIR || '/photos';
 const CONFIG_DIR = process.env.CONFIG_DIR || '/config';
+const SSL_CERT_PATH = process.env.SSL_CERT_PATH || '';
+const SSL_KEY_PATH = process.env.SSL_KEY_PATH || '';
+const ADMIN_USER = process.env.ADMIN_USER || 'admin';
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin';
 
 const DB_HOST = process.env.DB_HOST || '';
 const DB_PORT = Number(process.env.DB_PORT || 5432);
@@ -40,6 +45,33 @@ function baseUrlFromRequest(req) {
   if (BASE_URL_ENV) return BASE_URL_ENV;
   const proto = req.headers['x-forwarded-proto'] || req.protocol;
   return `${proto}://${req.get('host')}`;
+}
+
+function requireAdmin(req, res, next) {
+  const header = req.headers.authorization || '';
+  if (!header.startsWith('Basic ')) {
+    res.set('WWW-Authenticate', 'Basic realm="EventCam Admin"');
+    res.status(401).send('Authentication required.');
+    return;
+  }
+  const decoded = Buffer.from(header.slice(6), 'base64').toString('utf8');
+  const [user, pass] = decoded.split(':');
+  if (user !== ADMIN_USER || pass !== ADMIN_PASSWORD) {
+    res.set('WWW-Authenticate', 'Basic realm="EventCam Admin"');
+    res.status(401).send('Invalid credentials.');
+    return;
+  }
+  next();
+}
+
+function listPhotosForEvent(eventId) {
+  const eventPath = path.join(PHOTOS_DIR, eventId);
+  try {
+    const files = fs.readdirSync(eventPath);
+    return files.filter((file) => /\.(jpe?g|png|webp)$/i.test(file));
+  } catch (err) {
+    return [];
+  }
 }
 
 let pool = null;
@@ -156,19 +188,21 @@ app.get('/', async (req, res) => {
   res.send(renderCapturePage(eventId));
 });
 
-app.get('/admin', async (req, res) => {
+app.get('/admin', requireAdmin, async (req, res) => {
   const events = await listEvents();
   const baseUrl = baseUrlFromRequest(req);
 
   const cards = await Promise.all(events.map(async (evt) => {
     const url = `${baseUrl}/?event=${evt.id}`;
     const qr = await qrcode.toDataURL(url, { margin: 1, width: 240 });
+    const galleryUrl = `/admin/photos?event=${evt.id}`;
     return `
       <div class="card">
         <h3>${escapeHtml(evt.name)}</h3>
         <p class="muted">Event ID: ${evt.id}</p>
         <img src="${qr}" alt="QR code for ${escapeHtml(evt.name)}" />
         <p><a href="${url}">${url}</a></p>
+        <p><a href="${galleryUrl}">View photos</a></p>
       </div>
     `;
   }));
@@ -192,10 +226,53 @@ app.get('/admin', async (req, res) => {
   res.send(renderPage('EventCam Admin', content));
 });
 
-app.post('/admin/create', async (req, res) => {
+app.post('/admin/create', requireAdmin, async (req, res) => {
   const name = (req.body.name || DEFAULT_EVENT_NAME).trim() || DEFAULT_EVENT_NAME;
   await createEvent(name);
   res.redirect('/admin');
+});
+
+app.get('/admin/photos', requireAdmin, async (req, res) => {
+  const eventId = req.query.event;
+  if (!eventId) {
+    res.status(400).send(renderPage('Missing Event', '<p class="muted">Missing event id.</p>'));
+    return;
+  }
+
+  const exists = await eventExists(eventId);
+  if (!exists) {
+    res.status(404).send(renderPage('Event Not Found', '<p class="muted">Event not found.</p>'));
+    return;
+  }
+
+  const files = listPhotosForEvent(eventId);
+  const gallery = files.map((file) => `
+    <a class="thumb" href="/admin/media/${encodeURIComponent(eventId)}/${encodeURIComponent(file)}" target="_blank" rel="noopener">
+      <img src="/admin/media/${encodeURIComponent(eventId)}/${encodeURIComponent(file)}" alt="Photo" />
+    </a>
+  `).join('');
+
+  const content = `
+    <section class="hero">
+      <h1>Event Photos</h1>
+      <p class="muted">Event ID: ${escapeHtml(eventId)}</p>
+    </section>
+    <section class="panel">
+      <p><a href="/admin">Back to admin</a></p>
+    </section>
+    <section class="gallery">
+      ${gallery || '<p class="muted">No photos yet.</p>'}
+    </section>
+  `;
+
+  res.send(renderPage('Event Photos', content));
+});
+
+app.get('/admin/media/:eventId/:filename', requireAdmin, (req, res) => {
+  const eventId = req.params.eventId;
+  const filename = path.basename(req.params.filename);
+  const filePath = path.join(PHOTOS_DIR, eventId, filename);
+  res.sendFile(filePath);
 });
 
 app.post('/upload', upload.single('photo'), async (req, res) => {
@@ -282,9 +359,19 @@ function escapeHtml(value) {
 
 initDb()
   .then(() => {
+    ensureDir(PHOTOS_DIR);
+    ensureDir(CONFIG_DIR);
+
+    if (SSL_CERT_PATH && SSL_KEY_PATH) {
+      const cert = fs.readFileSync(SSL_CERT_PATH);
+      const key = fs.readFileSync(SSL_KEY_PATH);
+      https.createServer({ key, cert }, app).listen(PORT, () => {
+        console.log(`EventCam HTTPS listening on ${PORT}`);
+      });
+      return;
+    }
+
     app.listen(PORT, () => {
-      ensureDir(PHOTOS_DIR);
-      ensureDir(CONFIG_DIR);
       console.log(`EventCam listening on ${PORT}`);
     });
   })
