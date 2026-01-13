@@ -36,11 +36,15 @@ const UPLOADS_FILE = path.join(CONFIG_DIR, 'uploads.json');
 const RATE_LIMIT_FILE = path.join(CONFIG_DIR, 'rate-limits.json');
 
 const pendingEventCredentials = new Map();
+const qrCache = new Map();
+const QR_CACHE_TTL_MS = 30 * 60 * 1000;
+const statsCache = new Map();
+let uploadsCache = null;
+let uploadsDirty = false;
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use('/static', express.static(path.join(__dirname, 'public')));
-app.use(express.static(path.join(__dirname, 'public')));
 
 function ensureDir(dirPath) {
   fs.mkdirSync(dirPath, { recursive: true });
@@ -294,12 +298,35 @@ function loadUploadsLocal() {
 }
 
 function saveUploadsLocal(data) {
+  uploadsCache = data;
+  uploadsDirty = true;
+}
+
+function getUploadsStore() {
+  if (!uploadsCache) {
+    uploadsCache = loadUploadsLocal();
+  }
+  return uploadsCache;
+}
+
+function flushUploadsLocal(forceSync = false) {
+  if (!uploadsDirty || !uploadsCache) return;
   ensureDir(CONFIG_DIR);
-  fs.writeFileSync(UPLOADS_FILE, JSON.stringify(data, null, 2), 'utf8');
+  const payload = JSON.stringify(uploadsCache, null, 2);
+  uploadsDirty = false;
+  if (forceSync) {
+    fs.writeFileSync(UPLOADS_FILE, payload, 'utf8');
+    return;
+  }
+  fs.writeFile(UPLOADS_FILE, payload, 'utf8', (err) => {
+    if (err) {
+      uploadsDirty = true;
+    }
+  });
 }
 
 function recordUploadLocal(eventId, device) {
-  const uploads = loadUploadsLocal();
+  const uploads = getUploadsStore();
   if (!uploads.events) uploads.events = {};
   if (!uploads.events[eventId]) {
     uploads.events[eventId] = { devices: {} };
@@ -382,6 +409,35 @@ function listPhotosForEvent(eventId) {
   } catch (err) {
     return [];
   }
+}
+
+function getEventFileStatsCached(eventId) {
+  const eventPath = path.join(PHOTOS_DIR, eventId);
+  let dirMtime = null;
+  try {
+    dirMtime = fs.statSync(eventPath).mtimeMs;
+  } catch (err) {
+    dirMtime = null;
+  }
+
+  const cached = statsCache.get(eventId);
+  if (cached && cached.mtime === dirMtime) {
+    return cached.stats;
+  }
+
+  const files = listPhotosForEvent(eventId);
+  let bytes = 0;
+  files.forEach((file) => {
+    try {
+      const stat = fs.statSync(path.join(eventPath, file));
+      bytes += stat.size;
+    } catch (err) {
+      // Ignore missing files.
+    }
+  });
+  const stats = { photos: files.length, bytes };
+  statsCache.set(eventId, { mtime: dirMtime, stats });
+  return stats;
 }
 
 let pool = null;
@@ -569,10 +625,11 @@ async function deleteEventById(eventId) {
     const events = loadEventsLocal();
     const next = events.filter((evt) => evt.id !== eventId);
     saveEventsLocal(next);
-    const uploads = loadUploadsLocal();
+    const uploads = getUploadsStore();
     if (uploads.events && uploads.events[eventId]) {
       delete uploads.events[eventId];
       saveUploadsLocal(uploads);
+      flushUploadsLocal(true);
     }
   }
 
@@ -664,17 +721,7 @@ function isAuthorizedForEvent(req, event) {
 }
 
 function getEventFileStats(eventId) {
-  const files = listPhotosForEvent(eventId);
-  let bytes = 0;
-  files.forEach((file) => {
-    try {
-      const stat = fs.statSync(path.join(PHOTOS_DIR, eventId, file));
-      bytes += stat.size;
-    } catch (err) {
-      // Ignore missing files.
-    }
-  });
-  return { photos: files.length, bytes };
+  return getEventFileStatsCached(eventId);
 }
 
 function formatBytes(bytes) {
@@ -717,14 +764,14 @@ async function getStatsForEvents(events) {
     return { totals, perEvent };
   }
 
-  const uploads = loadUploadsLocal();
+  const uploads = getUploadsStore();
   const perEvent = {};
   let totalPhotos = 0;
   let totalBytes = 0;
   const totalDevices = new Set();
 
   events.forEach((evt) => {
-    const stats = getEventFileStats(evt.id);
+    const stats = getEventFileStatsCached(evt.id);
     totalPhotos += stats.photos;
     totalBytes += stats.bytes;
     const deviceMap = uploads.events?.[evt.id]?.devices || {};
@@ -751,12 +798,27 @@ async function getDeviceListForEvent(eventId) {
     return result.rows.map((row) => row.device_alias);
   }
 
-  const uploads = loadUploadsLocal();
+  const uploads = getUploadsStore();
   const deviceMap = uploads.events?.[eventId]?.devices || {};
   return Object.values(deviceMap)
     .map((entry) => entry.alias)
     .filter(Boolean)
     .sort((a, b) => a.localeCompare(b));
+}
+
+async function getQrDataUrl(url) {
+  const now = Date.now();
+  const cached = qrCache.get(url);
+  if (cached && cached.expiresAt > now) {
+    return cached.value;
+  }
+  const value = await qrcode.toDataURL(url, { margin: 1, width: 240 });
+  qrCache.set(url, { value, expiresAt: now + QR_CACHE_TTL_MS });
+  if (qrCache.size > 500) {
+    const [firstKey] = qrCache.keys();
+    if (firstKey) qrCache.delete(firstKey);
+  }
+  return value;
 }
 
 async function loadEventFromRequest(req, res, next, options = {}) {
@@ -822,7 +884,7 @@ app.get('/event/dashboard', async (req, res) => {
   const deviceList = await getDeviceListForEvent(eventId);
   const baseUrl = baseUrlFromRequest(req);
   const eventUrl = `${baseUrl}/?event=${event.id}`;
-  const qr = await qrcode.toDataURL(eventUrl, { margin: 1, width: 200 });
+  const qr = await getQrDataUrl(eventUrl);
   const pendingPassword = pendingEventCredentials.get(eventId);
   const files = listPhotosForEvent(eventId);
   const gallery = files.map((file) => `
@@ -1007,7 +1069,7 @@ app.get('/admin', requireAdmin, async (req, res) => {
 
   const cards = await Promise.all(events.map(async (evt) => {
     const url = `${baseUrl}/?event=${evt.id}`;
-    const qr = await qrcode.toDataURL(url, { margin: 1, width: 240 });
+    const qr = await getQrDataUrl(url);
     const galleryUrl = `/admin/photos?event=${evt.id}`;
     const eventStats = stats.perEvent[evt.id] || { photos: 0, bytes: 0, devices: 0 };
     return `
@@ -1305,7 +1367,7 @@ function renderPage(title, body, bodyClass = '') {
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>${escapeHtml(title)}</title>
-    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body${classAttr}>
     <main>
@@ -1322,7 +1384,7 @@ function renderCapturePage(eventId, deviceAlias) {
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>EventCam</title>
-    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/static/styles.css" />
   </head>
   <body>
     <main class="capture">
@@ -1345,7 +1407,7 @@ function renderCapturePage(eventId, deviceAlias) {
     <script>
       window.EVENT_ID = ${JSON.stringify(eventId)};
     </script>
-    <script src="/app.js"></script>
+    <script src="/static/app.js"></script>
   </body>
   </html>`;
 }
@@ -1477,6 +1539,9 @@ initDb()
     setInterval(() => {
       cleanupStaleEvents().catch((err) => console.error('Cleanup failed:', err));
     }, 60 * 60 * 1000);
+    setInterval(() => {
+      flushUploadsLocal();
+    }, 5000);
 
     if (SSL_CERT_PATH && SSL_KEY_PATH) {
       const cert = fs.readFileSync(SSL_CERT_PATH);
