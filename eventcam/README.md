@@ -1,6 +1,6 @@
 # EventCam (minimal)
 
-Self-hosted event camera app with QR join and uploads to a shared album folder.
+Self-hosted event camera app with QR join, guest uploads, and per-event admin controls.
 
 ## Local run
 
@@ -8,6 +8,7 @@ Self-hosted event camera app with QR join and uploads to a shared album folder.
 2. Start: `npm start`
 3. Visit `http://localhost:5001/admin`
 4. Each event gets a unique login; new credentials show once in the admin view (use Regenerate login to rotate).
+5. Guests can scan the QR to open the camera directly. Event login is required for dashboard access and event deletion.
 
 ## Local HTTPS (phone camera support)
 
@@ -32,7 +33,7 @@ SSL_CERT_PATH=certs/cert.pem SSL_KEY_PATH=certs/key.pem npm start
 - `PORT` (default 5001)
 - `BASE_URL` (optional, used for QR codes)
 - `DEFAULT_EVENT_NAME`
-- `ALLOW_GUEST_UPLOADS` (true/false)
+- `ALLOW_GUEST_UPLOADS` (true/false, when false uploads require event login)
 - `PHOTOS_DIR` (default /photos)
 - `CONFIG_DIR` (default /config)
 - `SSL_CERT_PATH` / `SSL_KEY_PATH` (enable HTTPS)
@@ -48,6 +49,7 @@ Run:
 docker run -p 5001:5001 \
   -v /path/to/config:/config \
   -v /path/to/photos:/photos \
+  -e PORT=5001 \
   -e BASE_URL="http://your-host:5001" \
   -e DB_HOST="postgres-host" \
   -e DB_USER="eventcam" \
@@ -61,6 +63,7 @@ docker run -p 5001:5001 \
   -v /path/to/config:/config \
   -v /path/to/photos:/photos \
   -v /path/to/certs:/certs \
+  -e PORT=5001 \
   -e SSL_CERT_PATH="/certs/cert.pem" \
   -e SSL_KEY_PATH="/certs/key.pem" \
   yourrepo/eventcam:latest
