@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <Container>
   <Name>EventCam</Name>
-  <Repository>crackerformula/eventcam:ai</Repository>
+  <Repository>crackerfomula/eventcam:ai</Repository>
   <Registry>https://ghcr.io</Registry>
   <Network>br0</Network>
   <MyIP></MyIP>
