@@ -2,14 +2,14 @@
 <Container>
   <Name>EventCam</Name>
   <Repository>crackerfomula/eventcam:latest</Repository>
-  <Registry>https://ghcr.io</Registry>
+  <Registry>https://hub.docker.com</Registry>
   <Network>br0</Network>
   <MyIP></MyIP>
   <Shell>bash</Shell>
   <Privileged>false</Privileged>
   <Support>https://your-domain.example/support</Support>
   <Project>https://your-domain.example/eventcam</Project>
-  <Overview>Self-hosted event camera app. Guests scan a QR code to join an event album, take photos, and uploads are saved automatically. Admin access is protected by Basic auth. For 100+ concurrent guests, use an external Postgres database.</Overview>
+  <Overview>Self-hosted event camera app. Guests scan a QR code to open the camera and upload photos. Event login is required for dashboards and deletions. Admin access is protected by Basic auth. For 100+ concurrent guests, use an external Postgres database.</Overview>
   <WebUI>http://[IP]:[PORT:5001]/</WebUI>
   <TemplateURL></TemplateURL>
   <Category>MediaApp:Photos</Category>
@@ -21,8 +21,9 @@
 
   <Config Name="WebUI Port" Target="5001" Default="5001" Mode="tcp" Description="Web interface port" Type="Port" Display="always" Required="true" Mask="false">5001</Config>
   <Config Name="App Config" Target="/config" Default="/mnt/user/appdata/eventcam" Mode="rw" Description="App configuration and database" Type="Path" Display="always" Required="true" Mask="false"/>
-  <Config Name="Event Photos" Target="/photos" Default="/mnt/user/event-photos" Mode="rw" Description="Uploaded event photos" Type="Path" Display="always" Required="true" Mask="false"/>
+  <Config Name="Event Photos" Target="/photos" Default="/mnt/user/eventcam" Mode="rw" Description="Uploaded event photos" Type="Path" Display="always" Required="true" Mask="false"/>
 
+  <Config Name="Port" Target="PORT" Default="5001" Mode="" Description="App port" Type="Variable" Display="always" Required="true" Mask="false"/>
   <Config Name="Public Base URL" Target="BASE_URL" Default="http://[IP]:[PORT:5001]" Mode="" Description="Public URL used in QR codes" Type="Variable" Display="always" Required="true" Mask="false"/>
   <Config Name="Default Event Name" Target="DEFAULT_EVENT_NAME" Default="My Event" Mode="" Description="Default album name for new events" Type="Variable" Display="always" Required="false" Mask="false"/>
   <Config Name="Allow Guest Uploads" Target="ALLOW_GUEST_UPLOADS" Default="true" Mode="" Description="Allow guests to upload without accounts" Type="Variable" Display="always" Required="true" Mask="false"/>
