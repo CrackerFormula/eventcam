@@ -20,6 +20,7 @@ const SSL_CERT_PATH = process.env.SSL_CERT_PATH || '';
 const SSL_KEY_PATH = process.env.SSL_KEY_PATH || '';
 const ADMIN_USER = process.env.ADMIN_USER || 'admin';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin';
+const INFERRED_GRACE_HOURS = Number(process.env.INFERRED_GRACE_HOURS || 168);
 
 const DB_HOST = process.env.DB_HOST || '';
 const DB_PORT = Number(process.env.DB_PORT || 5432);
@@ -32,12 +33,14 @@ const EVENTS_FILE = path.join(CONFIG_DIR, 'events.json');
 const ADMIN_FILE = path.join(CONFIG_DIR, 'admin.json');
 const AUTH_SECRET_FILE = path.join(CONFIG_DIR, 'auth-secret');
 const UPLOADS_FILE = path.join(CONFIG_DIR, 'uploads.json');
+const RATE_LIMIT_FILE = path.join(CONFIG_DIR, 'rate-limits.json');
 
 const pendingEventCredentials = new Map();
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use('/static', express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'public')));
 
 function ensureDir(dirPath) {
   fs.mkdirSync(dirPath, { recursive: true });
@@ -308,6 +311,50 @@ function recordUploadLocal(eventId, device) {
   saveUploadsLocal(uploads);
 }
 
+function loadRateLimitsLocal() {
+  try {
+    const raw = fs.readFileSync(RATE_LIMIT_FILE, 'utf8');
+    return JSON.parse(raw);
+  } catch (err) {
+    return { startEvents: {} };
+  }
+}
+
+function saveRateLimitsLocal(data) {
+  ensureDir(CONFIG_DIR);
+  fs.writeFileSync(RATE_LIMIT_FILE, JSON.stringify(data, null, 2), 'utf8');
+}
+
+function recordStartEvent(key) {
+  const data = loadRateLimitsLocal();
+  if (!data.startEvents) data.startEvents = {};
+  if (!data.startEvents[key]) data.startEvents[key] = [];
+  data.startEvents[key].push(Date.now());
+  data.startEvents[key] = data.startEvents[key].slice(-10);
+  saveRateLimitsLocal(data);
+}
+
+function isStartEventLimited(key) {
+  const data = loadRateLimitsLocal();
+  const now = Date.now();
+  const windowMs = 24 * 60 * 60 * 1000;
+  const entries = (data.startEvents && data.startEvents[key]) || [];
+  const recent = entries.filter((ts) => now - ts < windowMs);
+  if (recent.length !== entries.length) {
+    data.startEvents[key] = recent;
+    saveRateLimitsLocal(data);
+  }
+  return recent.length >= 5;
+}
+
+function getClientIp(req) {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (typeof forwarded === 'string' && forwarded.length) {
+    return forwarded.split(',')[0].trim();
+  }
+  return req.ip || req.connection?.remoteAddress || 'unknown';
+}
+
 const adminConfig = loadAdminConfig();
 
 function requireAdmin(req, res, next) {
@@ -410,6 +457,11 @@ function loadEventsLocal() {
     const events = JSON.parse(raw);
     let updated = false;
     events.forEach((evt) => {
+      if (!evt.created_at) {
+        evt.created_at = new Date().toISOString();
+        evt.created_at_inferred = true;
+        updated = true;
+      }
       if (!evt.event_user) {
         evt.event_user = `guest-${crypto.randomBytes(3).toString('hex')}`;
         updated = true;
@@ -447,6 +499,10 @@ function saveEventsLocal(events) {
   fs.writeFileSync(EVENTS_FILE, JSON.stringify(events, null, 2), 'utf8');
 }
 
+function ensureCreatedAt(value) {
+  return value || new Date().toISOString();
+}
+
 async function listEvents() {
   if (pool) {
     const result = await pool.query(`
@@ -474,6 +530,7 @@ async function createEvent(name) {
     events.unshift({
       id,
       name,
+      created_at: new Date().toISOString(),
       event_user: creds.username,
       event_password_hash: hashed.hash,
       event_password_salt: hashed.salt,
@@ -502,6 +559,70 @@ async function getEvent(eventId) {
   }
   const events = loadEventsLocal();
   return events.find((evt) => evt.id === eventId) || null;
+}
+
+async function deleteEventById(eventId) {
+  if (pool) {
+    await pool.query('DELETE FROM photos WHERE event_id = $1', [eventId]);
+    await pool.query('DELETE FROM events WHERE id = $1', [eventId]);
+  } else {
+    const events = loadEventsLocal();
+    const next = events.filter((evt) => evt.id !== eventId);
+    saveEventsLocal(next);
+    const uploads = loadUploadsLocal();
+    if (uploads.events && uploads.events[eventId]) {
+      delete uploads.events[eventId];
+      saveUploadsLocal(uploads);
+    }
+  }
+
+  pendingEventCredentials.delete(eventId);
+  const eventPath = path.join(PHOTOS_DIR, eventId);
+  try {
+    fs.rmSync(eventPath, { recursive: true, force: true });
+  } catch (err) {
+    // Ignore delete errors.
+  }
+}
+
+async function cleanupStaleEvents() {
+  const cutoff = Date.now() - 72 * 60 * 60 * 1000;
+  if (pool) {
+    const result = await pool.query(`
+      SELECT e.id
+      FROM events e
+      LEFT JOIN photos p ON p.event_id = e.id
+      WHERE p.id IS NULL
+        AND e.created_at < NOW() - INTERVAL '72 hours'
+    `);
+    for (const row of result.rows) {
+      await deleteEventById(row.id);
+    }
+    return;
+  }
+
+  const events = loadEventsLocal().map((evt) => ({
+    ...evt,
+    created_at: ensureCreatedAt(evt.created_at)
+  }));
+  const deletions = [];
+  events.forEach((evt) => {
+    const createdAt = Date.parse(evt.created_at || '');
+    if (evt.created_at_inferred) {
+      const graceCutoff = Date.now() - INFERRED_GRACE_HOURS * 60 * 60 * 1000;
+      if (!createdAt || createdAt > graceCutoff) {
+        return;
+      }
+    }
+    if (!createdAt || createdAt > cutoff) return;
+    const photos = listPhotosForEvent(evt.id);
+    if (!photos.length) {
+      deletions.push(evt.id);
+    }
+  });
+  for (const eventId of deletions) {
+    await deleteEventById(eventId);
+  }
 }
 
 async function recordPhoto(eventId, filePath, meta = {}) {
@@ -618,15 +739,44 @@ async function getStatsForEvents(events) {
   return { totals: { photos: totalPhotos, bytes: totalBytes, devices: totalDevices.size }, perEvent };
 }
 
-async function loadEventFromRequest(req, res, next) {
+async function getDeviceListForEvent(eventId) {
+  if (pool) {
+    const result = await pool.query(
+      `SELECT DISTINCT device_alias
+       FROM photos
+       WHERE event_id = $1 AND device_alias IS NOT NULL AND device_alias <> ''
+       ORDER BY device_alias`,
+      [eventId]
+    );
+    return result.rows.map((row) => row.device_alias);
+  }
+
+  const uploads = loadUploadsLocal();
+  const deviceMap = uploads.events?.[eventId]?.devices || {};
+  return Object.values(deviceMap)
+    .map((entry) => entry.alias)
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b));
+}
+
+async function loadEventFromRequest(req, res, next, options = {}) {
+  const wantsJson = options.json;
   const eventId = req.query.event || req.body.eventId || req.body.event;
   if (!eventId) {
-    res.status(400).send('Missing event id.');
+    if (wantsJson) {
+      res.status(400).json({ ok: false, error: 'Missing event id' });
+    } else {
+      res.status(400).send('Missing event id.');
+    }
     return;
   }
   const event = await getEvent(eventId);
   if (!event) {
-    res.status(404).send('Event not found.');
+    if (wantsJson) {
+      res.status(404).json({ ok: false, error: 'Event not found' });
+    } else {
+      res.status(404).send('Event not found.');
+    }
     return;
   }
   req.event = event;
@@ -637,7 +787,7 @@ async function loadEventFromRequest(req, res, next) {
 app.get('/', async (req, res) => {
   const eventId = req.query.event;
   if (!eventId) {
-    res.redirect('/admin');
+    res.send(renderLandingPage());
     return;
   }
 
@@ -669,6 +819,11 @@ app.get('/event/dashboard', async (req, res) => {
 
   const device = ensureDeviceCookie(req, res);
   const stats = (await getStatsForEvents([event])).perEvent[eventId] || { photos: 0, bytes: 0, devices: 0 };
+  const deviceList = await getDeviceListForEvent(eventId);
+  const baseUrl = baseUrlFromRequest(req);
+  const eventUrl = `${baseUrl}/?event=${event.id}`;
+  const qr = await qrcode.toDataURL(eventUrl, { margin: 1, width: 200 });
+  const pendingPassword = pendingEventCredentials.get(eventId);
   const files = listPhotosForEvent(eventId);
   const gallery = files.map((file) => `
     <a class="thumb" href="/event/media/${encodeURIComponent(eventId)}/${encodeURIComponent(file)}" target="_blank" rel="noopener">
@@ -684,7 +839,28 @@ app.get('/event/dashboard', async (req, res) => {
     <section class="panel">
       <p class="muted">Photos: ${stats.photos} · Devices: ${stats.devices} · Storage: ${formatBytes(stats.bytes)}</p>
       <p class="muted">Your device alias: ${escapeHtml(device.alias)}</p>
+      <details class="device-list">
+        <summary>View device aliases (${deviceList.length})</summary>
+        ${deviceList.length ? `
+        <ul>
+          ${deviceList.map((alias) => `<li>${escapeHtml(alias)}</li>`).join('')}
+        </ul>
+        ` : '<p class="muted">No uploads yet.</p>'}
+      </details>
     </section>
+    <section class="panel">
+      <h3>Share this event</h3>
+      <img src="${qr}" alt="QR code for ${escapeHtml(event.name)}" />
+      <p class="muted"><a href="${eventUrl}">${eventUrl}</a></p>
+    </section>
+    ${pendingPassword ? `
+    <section class="panel alert-panel">
+      <h3>Event Login</h3>
+      <p class="muted">Username: ${escapeHtml(event.event_user)}</p>
+      <p class="muted">Password: ${escapeHtml(pendingPassword)}</p>
+      <p class="alert-text">Copy this now; it will not be shown again.</p>
+    </section>
+    ` : ''}
     <section class="panel">
       <div class="row">
         <a href="/event/download?event=${encodeURIComponent(eventId)}">
@@ -708,6 +884,30 @@ app.get('/event/dashboard', async (req, res) => {
   `;
 
   res.send(renderPage('Event Dashboard', content));
+  if (pendingPassword) {
+    pendingEventCredentials.delete(eventId);
+  }
+});
+
+app.get('/start', async (req, res) => {
+  const device = ensureDeviceCookie(req, res);
+  const ipKey = `ip:${getClientIp(req)}`;
+  const deviceKey = `device:${device.id}`;
+  if (isStartEventLimited(ipKey) || isStartEventLimited(deviceKey)) {
+    res.redirect('https://www.youtube.com/watch?v=dQw4w9WgXcQ');
+    return;
+  }
+  recordStartEvent(ipKey);
+  recordStartEvent(deviceKey);
+
+  const event = await createEvent(DEFAULT_EVENT_NAME);
+  const payload = {
+    eventId: event.id,
+    user: event.event_user,
+    exp: Date.now() + 1000 * 60 * 60 * 24 * 7
+  };
+  setAuthCookie(req, res, encodeAuthToken(payload));
+  res.redirect(`/event/dashboard?event=${encodeURIComponent(event.id)}`);
 });
 
 app.get('/event/media/:eventId/:filename', async (req, res) => {
@@ -780,37 +980,10 @@ app.post('/event/delete', async (req, res) => {
     return;
   }
 
-  if (pool) {
-    await pool.query('DELETE FROM photos WHERE event_id = $1', [eventId]);
-    await pool.query('DELETE FROM events WHERE id = $1', [eventId]);
-  } else {
-    const events = loadEventsLocal();
-    const next = events.filter((evt) => evt.id !== eventId);
-    saveEventsLocal(next);
-    const uploads = loadUploadsLocal();
-    if (uploads.events && uploads.events[eventId]) {
-      delete uploads.events[eventId];
-      saveUploadsLocal(uploads);
-    }
-  }
-
-  const eventPath = path.join(PHOTOS_DIR, eventId);
-  try {
-    fs.rmSync(eventPath, { recursive: true, force: true });
-  } catch (err) {
-    // Ignore delete errors for now.
-  }
+  await deleteEventById(eventId);
 
   clearAuthCookie(req, res);
-  res.send(renderPage('Event Deleted', `
-    <section class="hero">
-      <h1>Event deleted</h1>
-      <p class="muted">This event and its photos were removed.</p>
-    </section>
-    <section class="panel">
-      <p><a href="/admin">Back to admin</a></p>
-    </section>
-  `));
+  res.redirect('/');
 });
 
 app.get('/admin', requireAdmin, async (req, res) => {
@@ -849,6 +1022,10 @@ app.get('/admin', requireAdmin, async (req, res) => {
         <form method="POST" action="/admin/regenerate">
           <input type="hidden" name="eventId" value="${escapeHtml(evt.id)}" />
           <button type="submit">Regenerate login</button>
+        </form>
+        <form method="POST" action="/admin/delete" onsubmit="return confirm('Delete this event and all photos?');">
+          <input type="hidden" name="eventId" value="${escapeHtml(evt.id)}" />
+          <button type="submit">Delete event</button>
         </form>
       </div>
     `;
@@ -948,6 +1125,16 @@ app.post('/admin/password', requireAdmin, (req, res) => {
   res.redirect('/admin?pw=changed');
 });
 
+app.post('/admin/delete', requireAdmin, async (req, res) => {
+  const eventId = String(req.body.eventId || '');
+  if (!eventId) {
+    res.redirect('/admin');
+    return;
+  }
+  await deleteEventById(eventId);
+  res.redirect('/admin');
+});
+
 app.get('/admin/logout', (req, res) => {
   res.set('WWW-Authenticate', 'Basic realm="EventCam Admin"');
   res.status(401).send('Logged out.');
@@ -1012,12 +1199,7 @@ app.get('/login', async (req, res) => {
 
 app.get('/logout', (req, res) => {
   clearAuthCookie(req, res);
-  const eventId = req.query.event;
-  if (eventId) {
-    res.redirect(`/login?event=${encodeURIComponent(eventId)}`);
-    return;
-  }
-  res.redirect('/admin');
+  res.redirect('/');
 });
 
 app.post('/login', async (req, res) => {
@@ -1090,7 +1272,7 @@ app.get('/admin/media/:eventId/:filename', requireAdmin, (req, res) => {
   res.sendFile(filePath);
 });
 
-app.post('/upload', loadEventFromRequest, (req, res, next) => {
+app.post('/upload', (req, res, next) => loadEventFromRequest(req, res, next, { json: true }), (req, res, next) => {
   if (!ALLOW_GUEST_UPLOADS && !isAuthorizedForEvent(req, req.event)) {
     res.status(401).json({ ok: false, error: 'Authentication required' });
     return;
@@ -1115,16 +1297,17 @@ app.post('/upload', loadEventFromRequest, (req, res, next) => {
   res.json({ ok: true, path: req.file.path });
 });
 
-function renderPage(title, body) {
+function renderPage(title, body, bodyClass = '') {
+  const classAttr = bodyClass ? ` class="${bodyClass}"` : '';
   return `<!doctype html>
   <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>${escapeHtml(title)}</title>
-    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/styles.css" />
   </head>
-  <body>
+  <body${classAttr}>
     <main>
       ${body}
     </main>
@@ -1139,7 +1322,7 @@ function renderCapturePage(eventId, deviceAlias) {
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>EventCam</title>
-    <link rel="stylesheet" href="/static/styles.css" />
+    <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <main class="capture">
@@ -1162,7 +1345,7 @@ function renderCapturePage(eventId, deviceAlias) {
     <script>
       window.EVENT_ID = ${JSON.stringify(eventId)};
     </script>
-    <script src="/static/app.js"></script>
+    <script src="/app.js"></script>
   </body>
   </html>`;
 }
@@ -1185,6 +1368,98 @@ function renderLoginPage(eventId, eventName, errorMessage) {
   `);
 }
 
+function renderLandingPage() {
+  const content = `
+    <section class="landing-hero">
+      <div class="landing-orbs">
+        <span class="orb orb-one"></span>
+        <span class="orb orb-two"></span>
+        <span class="orb orb-three"></span>
+      </div>
+      <div class="landing-content">
+        <p class="eyebrow">EventCam</p>
+        <h1>Turn every guest into a photographer.</h1>
+        <p class="lead">
+          QR-powered event capture, instant uploads, and private dashboards for every event.
+          No apps. No accounts. Just cameras and memories.
+        </p>
+        <div class="cta-row">
+          <a href="/start" class="cta primary">Open dashboard</a>
+          <a href="#features" class="cta ghost">See how it works</a>
+        </div>
+        <div class="stats">
+          <div>
+            <p class="stat-value">1 tap</p>
+            <p class="stat-label">Join via QR</p>
+          </div>
+          <div>
+            <p class="stat-value">Private</p>
+            <p class="stat-label">Event dashboards</p>
+          </div>
+          <div>
+            <p class="stat-value">Live</p>
+            <p class="stat-label">Photo flow</p>
+          </div>
+        </div>
+      </div>
+      <div class="landing-cards">
+        <div class="frame-card">
+          <div class="frame-header">
+            <span class="dot"></span><span class="dot"></span><span class="dot"></span>
+          </div>
+          <div class="frame-body">
+            <div class="camera-mock">
+              <div class="lens"></div>
+              <p>Guest camera ready</p>
+            </div>
+            <div class="upload-strip">
+              <span>Uploading...</span>
+              <span class="pulse"></span>
+            </div>
+          </div>
+        </div>
+        <div class="frame-card mini">
+          <h3>Event dashboard</h3>
+          <p>Download all photos, track devices, and stay private.</p>
+          <div class="sparkline">
+            <span></span><span></span><span></span><span></span><span></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="features" class="landing-grid">
+      <div class="feature-card">
+        <h3>QR-first onboarding</h3>
+        <p>Guests scan once and the camera opens instantly. Keep the line moving.</p>
+      </div>
+      <div class="feature-card">
+        <h3>Private event control</h3>
+        <p>Event login protects dashboards, downloads, and deletion controls.</p>
+      </div>
+      <div class="feature-card">
+        <h3>Stats that matter</h3>
+        <p>See total uploads, storage used, and unique device activity.</p>
+      </div>
+      <div class="feature-card">
+        <h3>Self-hosted</h3>
+        <p>Run on your own hardware with Docker, Unraid, or a VPS.</p>
+      </div>
+    </section>
+
+    <section class="landing-footer">
+      <h2>Ready for your next event?</h2>
+      <p>Spin up EventCam and share your first QR in minutes.</p>
+      <a href="/start" class="cta primary">Open dashboard</a>
+      <p class="admin-link">
+        <a href="/admin">Admin login</a>
+      </p>
+    </section>
+  `;
+
+  return renderPage('EventCam', content, 'landing-body');
+}
+
 function escapeHtml(value) {
   return String(value)
     .replace(/&/g, '&amp;')
@@ -1198,6 +1473,10 @@ initDb()
   .then(() => {
     ensureDir(PHOTOS_DIR);
     ensureDir(CONFIG_DIR);
+    cleanupStaleEvents().catch((err) => console.error('Cleanup failed:', err));
+    setInterval(() => {
+      cleanupStaleEvents().catch((err) => console.error('Cleanup failed:', err));
+    }, 60 * 60 * 1000);
 
     if (SSL_CERT_PATH && SSL_KEY_PATH) {
       const cert = fs.readFileSync(SSL_CERT_PATH);
