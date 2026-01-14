@@ -1484,14 +1484,14 @@ function renderLandingPage() {
       </div>
       <div class="landing-content">
         <p class="eyebrow">EventCam</p>
-        <h1>Scan. Shoot. Share.</h1>
+        <h1>Scan. Snap. Save.</h1>
         <p class="lead">
-          A minimal event camera that opens instantly from a QR code and uploads straight to your private gallery.
+          A frictionless event camera that opens in seconds from a QR code and streams every photo to your private gallery.
           No apps, no accounts, just the moments.
         </p>
         <div class="cta-row">
           <a href="/start" class="cta primary">Open dashboard</a>
-          <a href="#how" class="cta ghost">How it works</a>
+          <a href="#flow" class="cta ghost">How it works</a>
         </div>
         <div class="stats">
           <div>
@@ -1507,6 +1507,25 @@ function renderLandingPage() {
             <p class="stat-label">Owner control</p>
           </div>
         </div>
+      </div>
+      <div id="flow" class="flow-card">
+        <div class="flow-pill">How it works</div>
+        <h3>Three steps, zero friction.</h3>
+        <div class="flow-steps">
+          <div>
+            <p class="flow-step">01</p>
+            <p>Scan the QR</p>
+          </div>
+          <div>
+            <p class="flow-step">02</p>
+            <p>Capture instantly</p>
+          </div>
+          <div>
+            <p class="flow-step">03</p>
+            <p>Uploads live</p>
+          </div>
+        </div>
+        <p class="flow-note">Guests stay in the browser while you keep the gallery private.</p>
       </div>
       <div class="landing-cards">
         <div class="frame-card">
@@ -1531,24 +1550,6 @@ function renderLandingPage() {
             <span></span><span></span><span></span><span></span><span></span>
           </div>
         </div>
-      </div>
-    </section>
-
-    <section id="how" class="landing-steps">
-      <div class="step-card">
-        <p class="step-index">01</p>
-        <h3>Scan the QR</h3>
-        <p>Guests open the camera instantly from any phone browser.</p>
-      </div>
-      <div class="step-card">
-        <p class="step-index">02</p>
-        <h3>Capture</h3>
-        <p>Tap once to shoot. Selfie or rear camera, no friction.</p>
-      </div>
-      <div class="step-card">
-        <p class="step-index">03</p>
-        <h3>Upload</h3>
-        <p>Photos flow straight into your private event gallery.</p>
       </div>
     </section>
 
