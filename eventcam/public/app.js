@@ -5,13 +5,33 @@ const toggleCameraBtn = document.getElementById('toggle-camera');
 const statusEl = document.getElementById('status');
 
 let stream = null;
-let capturedBlob = null;
 let resolutionSet = false;
 let facingMode = 'environment';
+const resolutionPresets = [
+  { width: 3840, height: 2160 },
+  { width: 1920, height: 1080 },
+  { width: 1280, height: 720 }
+];
 
 function updateFacingLabel() {
   if (!toggleCameraBtn) return;
   toggleCameraBtn.textContent = facingMode === 'user' ? 'Rear camera' : 'Selfie mode';
+}
+
+function buildConstraints(preset) {
+  if (!preset) return { facingMode };
+  return {
+    facingMode,
+    width: { ideal: preset.width },
+    height: { ideal: preset.height }
+  };
+}
+
+async function requestStream(constraints) {
+  return navigator.mediaDevices.getUserMedia({
+    video: constraints,
+    audio: false
+  });
 }
 
 async function startCamera() {
@@ -20,20 +40,14 @@ async function startCamera() {
   }
 
   try {
-    const baseConstraints = { facingMode };
-    const videoConstraints = [
-      { facingMode, width: { ideal: 3840 }, height: { ideal: 2160 } },
-      { facingMode, width: { ideal: 1920 }, height: { ideal: 1080 } },
-      { facingMode, width: { ideal: 1280 }, height: { ideal: 720 } },
-      baseConstraints
-    ];
+    const baseConstraints = buildConstraints();
+    const videoConstraints = resolutionPresets
+      .map((preset) => buildConstraints(preset))
+      .concat(baseConstraints);
 
     let lastError = null;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        video: baseConstraints,
-        audio: false
-      });
+      stream = await requestStream(baseConstraints);
     } catch (err) {
       lastError = err;
     }
@@ -59,10 +73,7 @@ async function startCamera() {
     if (!stream) {
       for (const constraints of videoConstraints) {
         try {
-          stream = await navigator.mediaDevices.getUserMedia({
-            video: constraints,
-            audio: false
-          });
+          stream = await requestStream(constraints);
           break;
         } catch (err) {
           lastError = err;
@@ -104,7 +115,6 @@ captureBtn.addEventListener('click', () => {
   ctx.drawImage(video, 0, 0);
 
   canvas.toBlob((blob) => {
-    capturedBlob = blob;
     statusEl.textContent = blob ? 'Uploading...' : 'Capture failed.';
     if (blob) {
       uploadPhoto(blob);

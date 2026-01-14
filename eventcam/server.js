@@ -68,7 +68,7 @@ function loadAuthSecret() {
 }
 
 function safeId() {
-  return crypto.randomBytes(4).toString('hex');
+  return crypto.randomBytes(8).toString('hex');
 }
 
 function base64UrlEncode(value) {
@@ -111,6 +111,32 @@ function appendSetCookie(res, value) {
 
 const AUTH_SECRET = loadAuthSecret();
 
+function isSecureRequest(req) {
+  return req.secure || req.headers['x-forwarded-proto'] === 'https';
+}
+
+function buildCookieAttributes(req, maxAgeSeconds, options = {}) {
+  const attributes = [
+    'Path=/',
+    'SameSite=Lax',
+    `Max-Age=${maxAgeSeconds}`
+  ];
+  if (options.httpOnly) {
+    attributes.push('HttpOnly');
+  }
+  if (isSecureRequest(req)) {
+    attributes.push('Secure');
+  }
+  return attributes;
+}
+
+function safeEqualHex(expectedHex, actualHex) {
+  const expected = Buffer.from(expectedHex, 'hex');
+  const actual = Buffer.from(actualHex, 'hex');
+  if (expected.length !== actual.length) return false;
+  return crypto.timingSafeEqual(expected, actual);
+}
+
 function signToken(value) {
   return crypto.createHmac('sha256', AUTH_SECRET).update(value).digest('hex');
 }
@@ -125,10 +151,7 @@ function decodeAuthToken(token) {
   if (!token) return null;
   const [body, signature] = token.split('.');
   if (!body || !signature) return null;
-  const expected = Buffer.from(signToken(body), 'hex');
-  const actual = Buffer.from(signature, 'hex');
-  if (expected.length !== actual.length) return null;
-  if (!crypto.timingSafeEqual(expected, actual)) return null;
+  if (!safeEqualHex(signToken(body), signature)) return null;
   try {
     return JSON.parse(base64UrlDecode(body));
   } catch (err) {
@@ -137,39 +160,23 @@ function decodeAuthToken(token) {
 }
 
 function setAuthCookie(req, res, token) {
-  const secure = req.secure || req.headers['x-forwarded-proto'] === 'https';
-  const attributes = [
-    `eventcam_auth=${encodeURIComponent(token)}`,
-    'Path=/',
-    'HttpOnly',
-    'SameSite=Lax',
-    `Max-Age=${60 * 60 * 24 * 7}`
-  ];
-  if (secure) {
-    attributes.push('Secure');
-  }
-  appendSetCookie(res, attributes.join('; '));
+  const attributes = buildCookieAttributes(req, 60 * 60 * 24 * 7, { httpOnly: true });
+  appendSetCookie(res, [`eventcam_auth=${encodeURIComponent(token)}`].concat(attributes).join('; '));
 }
 
 function clearAuthCookie(req, res) {
-  const secure = req.secure || req.headers['x-forwarded-proto'] === 'https';
-  const attributes = [
-    'eventcam_auth=',
-    'Path=/',
-    'HttpOnly',
-    'SameSite=Lax',
-    'Max-Age=0'
-  ];
-  if (secure) {
-    attributes.push('Secure');
-  }
-  appendSetCookie(res, attributes.join('; '));
+  const attributes = buildCookieAttributes(req, 0, { httpOnly: true });
+  appendSetCookie(res, ['eventcam_auth='].concat(attributes).join('; '));
 }
 
 function baseUrlFromRequest(req) {
   if (BASE_URL_ENV) return BASE_URL_ENV;
   const proto = req.headers['x-forwarded-proto'] || req.protocol;
-  return `${proto}://${req.get('host')}`;
+  const forwardedHost = req.headers['x-forwarded-host'];
+  const rawHost = forwardedHost || req.headers.host || req.hostname || 'localhost';
+  const host = rawHost.split(',')[0].trim();
+  const safeHost = host.match(/^[a-z0-9.-]+(:\d+)?$/i) ? host : (req.hostname || 'localhost');
+  return `${proto}://${safeHost}`;
 }
 
 function generateEventCredentials() {
@@ -201,15 +208,7 @@ function generateDeviceAlias() {
 }
 
 function setDeviceCookie(req, res, id, alias) {
-  const secure = req.secure || req.headers['x-forwarded-proto'] === 'https';
-  const baseAttributes = [
-    'Path=/',
-    'SameSite=Lax',
-    `Max-Age=${60 * 60 * 24 * 365}`
-  ];
-  if (secure) {
-    baseAttributes.push('Secure');
-  }
+  const baseAttributes = buildCookieAttributes(req, 60 * 60 * 24 * 365);
   appendSetCookie(res, [`eventcam_device=${encodeURIComponent(id)}`].concat(baseAttributes).join('; '));
   appendSetCookie(res, [`eventcam_alias=${encodeURIComponent(alias)}`].concat(baseAttributes).join('; '));
 }
@@ -271,10 +270,7 @@ function saveAdminConfig(config) {
 
 function verifyPassword(password, config) {
   const test = crypto.pbkdf2Sync(password, config.salt, config.iterations, 64, 'sha256').toString('hex');
-  const expected = Buffer.from(config.hash, 'hex');
-  const actual = Buffer.from(test, 'hex');
-  if (expected.length !== actual.length) return false;
-  return crypto.timingSafeEqual(expected, actual);
+  return safeEqualHex(config.hash, test);
 }
 
 function verifyEventPassword(password, event) {
@@ -288,10 +284,7 @@ function verifyEventPassword(password, event) {
     64,
     'sha256'
   ).toString('hex');
-  const expected = Buffer.from(event.event_password_hash, 'hex');
-  const actual = Buffer.from(test, 'hex');
-  if (expected.length !== actual.length) return false;
-  return crypto.timingSafeEqual(expected, actual);
+  return safeEqualHex(event.event_password_hash, test);
 }
 
 function loadUploadsLocal() {
@@ -924,6 +917,7 @@ app.get('/event/dashboard', async (req, res) => {
   const topDevices = await getTopDevicesForEvent(eventId, 3);
   const baseUrl = baseUrlFromRequest(req);
   const eventUrl = `${baseUrl}/?event=${event.id}`;
+  const eventUrlHtml = escapeHtml(eventUrl);
   const qr = await getQrDataUrl(eventUrl);
   const pendingPassword = pendingEventCredentials.get(eventId);
   const files = listPhotosForEvent(eventId);
@@ -959,7 +953,7 @@ app.get('/event/dashboard', async (req, res) => {
     <section class="panel">
       <h3>Share this event</h3>
       <img src="${qr}" alt="QR code for ${escapeHtml(event.name)}" />
-      <p class="muted"><a href="${eventUrl}">${eventUrl}</a></p>
+      <p class="muted"><a href="${eventUrlHtml}">${eventUrlHtml}</a></p>
     </section>
     ${pendingPassword ? `
     <section class="panel alert-panel">
@@ -1115,6 +1109,7 @@ app.get('/admin', requireAdmin, async (req, res) => {
 
   const cards = await Promise.all(events.map(async (evt) => {
     const url = `${baseUrl}/?event=${evt.id}`;
+    const urlHtml = escapeHtml(url);
     const qr = await getQrDataUrl(url);
     const galleryUrl = `/admin/photos?event=${evt.id}`;
     const eventStats = stats.perEvent[evt.id] || { photos: 0, bytes: 0, devices: 0 };
@@ -1125,7 +1120,7 @@ app.get('/admin', requireAdmin, async (req, res) => {
         <p class="muted">Login user: ${escapeHtml(evt.event_user || '')}</p>
         <p class="muted">Photos: ${eventStats.photos} · Devices: ${eventStats.devices} · Storage: ${formatBytes(eventStats.bytes)}</p>
         <img src="${qr}" alt="QR code for ${escapeHtml(evt.name)}" />
-        <p><a href="${url}">${url}</a></p>
+        <p><a href="${urlHtml}">${urlHtml}</a></p>
         <p><a href="${galleryUrl}">View photos</a></p>
         <form method="POST" action="/admin/regenerate">
           <input type="hidden" name="eventId" value="${escapeHtml(evt.id)}" />
