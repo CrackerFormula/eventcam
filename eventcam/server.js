@@ -1535,7 +1535,15 @@ function renderLandingPage() {
           <div class="frame-body">
             <div class="camera-mock">
               <div class="lens"></div>
-              <p>Guest camera ready</p>
+              <div class="qr-focus">
+                <div class="qr-code">
+                  <span></span><span></span><span></span><span></span><span></span>
+                  <span></span><span></span><span></span><span></span><span></span>
+                  <span></span><span></span><span></span><span></span><span></span>
+                  <span></span><span></span><span></span><span></span><span></span>
+                  <span></span><span></span><span></span><span></span><span></span>
+                </div>
+              </div>
             </div>
             <div class="upload-strip">
               <span>Uploading...</span>
