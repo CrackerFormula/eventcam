@@ -1,12 +1,17 @@
 @import url('https://fonts.googleapis.com/css2?family=Fira+Sans:wght@400;600&family=Fraunces:opsz,wght@9..144,600&family=Space+Grotesk:wght@400;500;600&display=swap');
 
 :root {
-  --bg: #f5f1ea;
-  --accent: #1d6b59;
-  --dark: #1c1f24;
-  --muted: #6b6b6b;
+  --bg: #f3efe6;
+  --bg-deep: #e7efe9;
+  --accent: #136f63;
+  --accent-strong: #0b4d44;
+  --highlight: #f39a5a;
+  --dark: #161a1d;
+  --muted: #5b5f66;
   --card: #ffffff;
-  --shadow: 0 12px 30px rgba(28, 31, 36, 0.1);
+  --card-tint: rgba(255, 255, 255, 0.85);
+  --shadow: 0 18px 40px rgba(14, 18, 22, 0.16);
+  --shadow-soft: 0 8px 20px rgba(20, 26, 30, 0.12);
 }
 
 * {
@@ -16,8 +21,20 @@
 body {
   margin: 0;
   font-family: 'Fira Sans', sans-serif;
-  background: linear-gradient(120deg, #f8f2e8 0%, #ecf5f1 100%);
+  background: linear-gradient(140deg, var(--bg) 0%, #f7f0e3 35%, var(--bg-deep) 100%);
   color: var(--dark);
+}
+
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background:
+    radial-gradient(circle at 12% 18%, rgba(19, 111, 99, 0.12), transparent 45%),
+    radial-gradient(circle at 85% 10%, rgba(243, 154, 90, 0.18), transparent 45%),
+    radial-gradient(circle at 70% 80%, rgba(86, 163, 197, 0.18), transparent 55%);
+  pointer-events: none;
+  z-index: -1;
 }
 
 main {
@@ -26,11 +43,13 @@ main {
   display: flex;
   flex-direction: column;
   gap: 24px;
+  animation: fade-up 0.6s ease both;
 }
 
 .hero h1 {
   margin: 0 0 8px 0;
-  font-size: 2.2rem;
+  font-family: 'Fraunces', serif;
+  font-size: clamp(2.2rem, 4vw, 3.4rem);
 }
 
 .hero p {
@@ -39,10 +58,13 @@ main {
 }
 
 .panel {
-  background: var(--card);
-  padding: 16px;
-  border-radius: 16px;
+  background: var(--card-tint);
+  padding: 18px;
+  border-radius: 18px;
   box-shadow: var(--shadow);
+  border: 1px solid rgba(8, 12, 10, 0.06);
+  backdrop-filter: blur(8px);
+  animation: fade-up 0.6s ease both;
 }
 
 .row {
@@ -54,18 +76,34 @@ main {
   flex: 1;
   padding: 12px 16px;
   border-radius: 12px;
-  border: 1px solid #e0ded9;
+  border: 1px solid rgba(22, 26, 29, 0.14);
   font-size: 1rem;
+  background: #fff;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.row input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(19, 111, 99, 0.16);
 }
 
 button {
-  padding: 12px 18px;
-  border-radius: 12px;
+  padding: 12px 20px;
+  border-radius: 999px;
   border: none;
-  background: var(--accent);
+  background: linear-gradient(135deg, var(--accent), var(--accent-strong));
   color: white;
   font-weight: 600;
   cursor: pointer;
+  box-shadow: var(--shadow-soft);
+  transition: transform 0.2s ease, box-shadow 0.2s ease, filter 0.2s ease;
+}
+
+button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 12px 24px rgba(11, 77, 68, 0.25);
+  filter: saturate(1.1);
 }
 
 button:disabled {
@@ -91,6 +129,12 @@ button:disabled {
   border-radius: 16px;
   overflow: hidden;
   box-shadow: var(--shadow);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.thumb:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 20px 40px rgba(20, 26, 30, 0.2);
 }
 
 .thumb img {
@@ -101,10 +145,12 @@ button:disabled {
 }
 
 .card {
-  background: var(--card);
+  background: var(--card-tint);
   padding: 18px;
-  border-radius: 16px;
+  border-radius: 18px;
   box-shadow: var(--shadow);
+  border: 1px solid rgba(8, 12, 10, 0.06);
+  animation: fade-up 0.6s ease both;
 }
 
 .card img {
@@ -130,6 +176,8 @@ button:disabled {
   border-radius: 24px;
   padding: 12px;
   box-shadow: var(--shadow);
+  border: 1px solid rgba(8, 12, 10, 0.06);
+  animation: fade-up 0.6s ease both;
 }
 
 video {
@@ -151,12 +199,12 @@ video {
 
 .status {
   font-weight: 600;
-  color: var(--accent);
+  color: var(--accent-strong);
 }
 
 .alert-panel {
-  border: 2px solid #f2b564;
-  background: #fff6e8;
+  border: 2px solid var(--highlight);
+  background: #fff3e6;
 }
 
 .alert-text {
@@ -168,7 +216,7 @@ video {
   margin-top: 12px;
   padding: 12px 14px;
   border-radius: 12px;
-  background: rgba(29, 107, 89, 0.08);
+  background: rgba(19, 111, 99, 0.1);
 }
 
 .device-list summary {
@@ -473,6 +521,11 @@ video {
 @keyframes rise {
   from { opacity: 0; transform: translateY(18px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(12px) scale(0.99); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
 @keyframes pulse {

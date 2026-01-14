@@ -931,6 +931,7 @@ app.get('/event/dashboard', async (req, res) => {
     <section class="hero">
       <h1>${escapeHtml(event.name)}</h1>
       <p class="muted">Your private event gallery.</p>
+      <p class="muted">Guests scan the QR code to open the camera and upload instantly.</p>
     </section>
     <section class="panel">
       <p class="muted">Photos: ${stats.photos} · Devices: ${stats.devices} · Storage: ${formatBytes(stats.bytes)}</p>
@@ -1433,6 +1434,7 @@ function renderCapturePage(eventId, deviceAlias) {
         <video id="video" autoplay playsinline></video>
         <canvas id="canvas" hidden></canvas>
       </section>
+      <section class="muted">Scan → Capture → Upload</section>
       <section class="controls">
         <button id="capture">Take Photo</button>
         <button id="toggle-camera" type="button">Selfie mode</button>
