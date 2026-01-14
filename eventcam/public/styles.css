@@ -138,6 +138,10 @@ video {
   background: #111;
 }
 
+.video-mirror {
+  transform: scaleX(-1);
+}
+
 .controls {
   display: flex;
   gap: 12px;

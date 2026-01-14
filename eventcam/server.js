@@ -337,9 +337,11 @@ function recordUploadLocal(eventId, device) {
   if (!uploads.events[eventId]) {
     uploads.events[eventId] = { devices: {} };
   }
+  const existing = uploads.events[eventId].devices[device.id] || {};
   uploads.events[eventId].devices[device.id] = {
     alias: device.alias,
-    lastSeen: new Date().toISOString()
+    lastSeen: new Date().toISOString(),
+    count: (existing.count || 0) + 1
   };
   saveUploadsLocal(uploads);
 }
@@ -812,6 +814,37 @@ async function getDeviceListForEvent(eventId) {
     .sort((a, b) => a.localeCompare(b));
 }
 
+async function getTopDevicesForEvent(eventId, limit = 3) {
+  if (pool) {
+    const result = await pool.query(
+      `SELECT device_alias, COUNT(*)::int AS photos
+       FROM photos
+       WHERE event_id = $1 AND device_alias IS NOT NULL AND device_alias <> ''
+       GROUP BY device_alias
+       ORDER BY photos DESC, device_alias ASC
+       LIMIT $2`,
+      [eventId, limit]
+    );
+    return result.rows.map((row) => ({
+      alias: row.device_alias,
+      photos: Number(row.photos)
+    }));
+  }
+
+  const uploads = getUploadsStore();
+  const deviceMap = uploads.events?.[eventId]?.devices || {};
+  return Object.values(deviceMap)
+    .map((entry) => ({
+      alias: entry.alias || 'Unknown device',
+      photos: Number(entry.count || 0)
+    }))
+    .sort((a, b) => {
+      if (b.photos !== a.photos) return b.photos - a.photos;
+      return a.alias.localeCompare(b.alias);
+    })
+    .slice(0, limit);
+}
+
 async function getQrDataUrl(url) {
   const now = Date.now();
   const cached = qrCache.get(url);
@@ -888,6 +921,7 @@ app.get('/event/dashboard', async (req, res) => {
   const device = ensureDeviceCookie(req, res);
   const stats = (await getStatsForEvents([event])).perEvent[eventId] || { photos: 0, bytes: 0, devices: 0 };
   const deviceList = await getDeviceListForEvent(eventId);
+  const topDevices = await getTopDevicesForEvent(eventId, 3);
   const baseUrl = baseUrlFromRequest(req);
   const eventUrl = `${baseUrl}/?event=${event.id}`;
   const qr = await getQrDataUrl(eventUrl);
@@ -906,6 +940,12 @@ app.get('/event/dashboard', async (req, res) => {
     </section>
     <section class="panel">
       <p class="muted">Photos: ${stats.photos} · Devices: ${stats.devices} · Storage: ${formatBytes(stats.bytes)}</p>
+      ${topDevices.length ? `
+      <p class="muted">Top devices:</p>
+      <ul>
+        ${topDevices.map((entry) => `<li>${escapeHtml(entry.alias)} (${entry.photos})</li>`).join('')}
+      </ul>
+      ` : ''}
       <p class="muted">Your device alias: ${escapeHtml(device.alias)}</p>
       <details class="device-list">
         <summary>View device aliases (${deviceList.length})</summary>
@@ -1400,6 +1440,7 @@ function renderCapturePage(eventId, deviceAlias) {
       </section>
       <section class="controls">
         <button id="capture">Take Photo</button>
+        <button id="toggle-camera" type="button">Selfie mode</button>
         <a href="/event/dashboard?event=${encodeURIComponent(eventId)}">
           <button type="button">Event dashboard</button>
         </a>
