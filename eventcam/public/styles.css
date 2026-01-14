@@ -245,7 +245,7 @@ video {
 
 .landing-body {
   font-family: 'Space Grotesk', sans-serif;
-  background: radial-gradient(circle at top, #fff1d3 0%, #f8efe0 35%, #e6f1ed 100%);
+  background: radial-gradient(circle at top, #ffe9c8 0%, #f6ede0 40%, #e1f0ea 100%);
   color: #1b1b1b;
 }
 
@@ -266,8 +266,8 @@ video {
   overflow: hidden;
   padding: 48px;
   border-radius: 32px;
-  background: linear-gradient(135deg, rgba(255, 255, 255, 0.9), rgba(250, 243, 232, 0.5));
-  box-shadow: 0 30px 80px rgba(26, 36, 32, 0.12);
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.95), rgba(245, 239, 229, 0.6));
+  box-shadow: 0 30px 80px rgba(26, 36, 32, 0.16);
 }
 
 .landing-orbs .orb {
@@ -322,7 +322,7 @@ video {
 
 .landing-content h1 {
   font-family: 'Fraunces', serif;
-  font-size: clamp(2.6rem, 4vw, 4rem);
+  font-size: clamp(2.8rem, 4vw, 4.4rem);
   margin: 0;
 }
 
@@ -477,6 +477,43 @@ video {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 18px;
+}
+
+.landing-steps {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 18px;
+}
+
+.step-card {
+  background: rgba(255, 255, 255, 0.9);
+  border-radius: 22px;
+  padding: 22px;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  box-shadow: 0 16px 32px rgba(15, 21, 19, 0.12);
+  animation: rise 0.8s ease-out both;
+}
+
+.step-card:nth-child(2) { animation-delay: 0.08s; }
+.step-card:nth-child(3) { animation-delay: 0.16s; }
+
+.step-index {
+  font-size: 0.75rem;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  font-weight: 600;
+  color: #1d6b59;
+  margin: 0 0 8px 0;
+}
+
+.step-card h3 {
+  margin: 0 0 8px 0;
+  font-size: 1.2rem;
+}
+
+.step-card p {
+  margin: 0;
+  color: #4a4a4a;
 }
 
 .feature-card {

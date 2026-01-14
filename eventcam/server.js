@@ -1484,27 +1484,27 @@ function renderLandingPage() {
       </div>
       <div class="landing-content">
         <p class="eyebrow">EventCam</p>
-        <h1>Turn every guest into a photographer.</h1>
+        <h1>Scan. Shoot. Share.</h1>
         <p class="lead">
-          QR-powered event capture, instant uploads, and private dashboards for every event.
-          No apps. No accounts. Just cameras and memories.
+          A minimal event camera that opens instantly from a QR code and uploads straight to your private gallery.
+          No apps, no accounts, just the moments.
         </p>
         <div class="cta-row">
           <a href="/start" class="cta primary">Open dashboard</a>
-          <a href="#features" class="cta ghost">See how it works</a>
+          <a href="#how" class="cta ghost">How it works</a>
         </div>
         <div class="stats">
           <div>
-            <p class="stat-value">1 tap</p>
-            <p class="stat-label">Join via QR</p>
-          </div>
-          <div>
-            <p class="stat-value">Private</p>
-            <p class="stat-label">Event dashboards</p>
+            <p class="stat-value">QR</p>
+            <p class="stat-label">Instant join</p>
           </div>
           <div>
             <p class="stat-value">Live</p>
-            <p class="stat-label">Photo flow</p>
+            <p class="stat-label">Auto uploads</p>
+          </div>
+          <div>
+            <p class="stat-value">Private</p>
+            <p class="stat-label">Owner control</p>
           </div>
         </div>
       </div>
@@ -1526,11 +1526,29 @@ function renderLandingPage() {
         </div>
         <div class="frame-card mini">
           <h3>Event dashboard</h3>
-          <p>Download all photos, track devices, and stay private.</p>
+          <p>Download everything, see device activity, and manage each event in one view.</p>
           <div class="sparkline">
             <span></span><span></span><span></span><span></span><span></span>
           </div>
         </div>
+      </div>
+    </section>
+
+    <section id="how" class="landing-steps">
+      <div class="step-card">
+        <p class="step-index">01</p>
+        <h3>Scan the QR</h3>
+        <p>Guests open the camera instantly from any phone browser.</p>
+      </div>
+      <div class="step-card">
+        <p class="step-index">02</p>
+        <h3>Capture</h3>
+        <p>Tap once to shoot. Selfie or rear camera, no friction.</p>
+      </div>
+      <div class="step-card">
+        <p class="step-index">03</p>
+        <h3>Upload</h3>
+        <p>Photos flow straight into your private event gallery.</p>
       </div>
     </section>
 
