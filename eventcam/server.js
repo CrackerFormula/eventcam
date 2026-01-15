@@ -1562,16 +1562,27 @@ function renderLandingPage() {
             <span class="dot"></span><span class="dot"></span><span class="dot"></span>
           </div>
           <div class="frame-body">
-            <div class="camera-mock">
-              <div class="lens"></div>
-              <div class="qr-focus">
-                <div class="qr-code">
-                  <span></span><span></span><span></span><span></span><span></span>
-                  <span></span><span></span><span></span><span></span><span></span>
-                  <span></span><span></span><span></span><span></span><span></span>
-                  <span></span><span></span><span></span><span></span><span></span>
-                  <span></span><span></span><span></span><span></span><span></span>
+            <div class="phone-mock">
+              <div class="phone-top">
+                <span class="speaker"></span>
+                <span class="front-camera"></span>
+              </div>
+              <div class="phone-screen">
+                <div class="scan-frame">
+                  <div class="qr-code">
+                    <span class="finder tl"></span>
+                    <span class="finder tr"></span>
+                    <span class="finder bl"></span>
+                    <span></span><span></span><span></span><span></span><span></span>
+                    <span></span><span></span><span></span><span></span><span></span>
+                    <span></span><span></span><span></span><span></span><span></span>
+                    <span></span><span></span><span></span><span></span><span></span>
+                    <span></span><span></span><span></span><span></span><span></span>
+                  </div>
+                  <span class="scan-line"></span>
+                  <span class="scan-glow"></span>
                 </div>
+                <span class="photo-flash"></span>
               </div>
             </div>
             <div class="upload-strip">
