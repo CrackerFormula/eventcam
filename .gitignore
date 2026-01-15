@@ -2,3 +2,5 @@ eventcam/certs/
 local-config/
 local-photos/
 *.png
+AGENTS.md
+eventcam/AGENTS.md
