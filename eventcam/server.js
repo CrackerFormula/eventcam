@@ -959,6 +959,7 @@ app.get('/event/dashboard', async (req, res) => {
     ${pendingPassword ? `
     <section class="panel alert-panel">
       <h3>Event Login</h3>
+      <p class="muted">Event ID: ${escapeHtml(event.id)}</p>
       <p class="muted">Username: ${escapeHtml(event.event_user)}</p>
       <p class="muted">Password: ${escapeHtml(pendingPassword)}</p>
       <p class="alert-text">Copy this now; it will not be shown again.</p>
@@ -993,6 +994,10 @@ app.get('/event/dashboard', async (req, res) => {
 });
 
 app.get('/start', async (req, res) => {
+  res.send(renderStartPage(DEFAULT_EVENT_NAME));
+});
+
+app.post('/start', async (req, res) => {
   const device = ensureDeviceCookie(req, res);
   const ipKey = `ip:${getClientIp(req)}`;
   const deviceKey = `device:${device.id}`;
@@ -1003,7 +1008,8 @@ app.get('/start', async (req, res) => {
   recordStartEvent(ipKey);
   recordStartEvent(deviceKey);
 
-  const event = await createEvent(DEFAULT_EVENT_NAME);
+  const name = (req.body.name || DEFAULT_EVENT_NAME).trim() || DEFAULT_EVENT_NAME;
+  const event = await createEvent(name);
   const payload = {
     eventId: event.id,
     user: event.event_user,
@@ -1474,6 +1480,21 @@ function renderLoginPage(eventId, eventName, errorMessage) {
   `);
 }
 
+function renderStartPage(defaultName) {
+  return renderPage('Start Event', `
+    <section class="hero">
+      <h1>Start a new event</h1>
+      <p class="muted">Give it a name now or keep the default.</p>
+    </section>
+    <section class="panel">
+      <form method="POST" action="/start" class="row">
+        <input type="text" name="name" placeholder="Event name" value="${escapeHtml(defaultName)}" />
+        <button type="submit">Create event</button>
+      </form>
+    </section>
+  `);
+}
+
 function renderLandingPage() {
   const content = `
     <section class="landing-hero">
@@ -1492,6 +1513,14 @@ function renderLandingPage() {
         <div class="cta-row">
           <a href="/start" class="cta primary">Open dashboard</a>
           <a href="#flow" class="cta ghost">How it works</a>
+        </div>
+        <div class="landing-login">
+          <p class="login-title">Have an event login?</p>
+          <form method="GET" action="/login" class="row login-form">
+            <input type="text" name="event" placeholder="Event ID" autocomplete="off" required />
+            <button type="submit">Event login</button>
+          </form>
+          <p class="login-hint">Use the event ID from your dashboard invite.</p>
         </div>
         <div class="stats">
           <div>
